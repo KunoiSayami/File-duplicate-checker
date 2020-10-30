@@ -17,15 +17,15 @@
  ** You should have received a copy of the GNU Affero General Public License
  ** along with this program. If not, see <https://www.gnu.org/licenses/>.
  */
+#![feature(async_closure)]
 use sha2::{Sha256, Digest};
 use std::fs::File;
 use std::io::Read;
 use std::{env, fs};
 use std::path::PathBuf;
-use sqlx;
-use sqlx::{Connection, SqliteConnection};
-use futures::TryStreamExt;
+use rusqlite::{params, Connection, Result};
 
+#[derive(Debug)]
 struct HashedFile {
     file_name: String,
     hash: String
@@ -47,8 +47,9 @@ fn get_file_sha256(s: &PathBuf) -> String {
     format!("{:x}", result)
 }
 
-async fn iter_directory(dir: PathBuf) {
+fn iter_directory(dir: PathBuf) -> Vec<HashedFile> {
     //env::set_current_dir(PathBuf::from(dir));
+    let mut files = Vec::new();
     let current_dir = dir;
     println!(
         "in {:?}:",
@@ -58,9 +59,14 @@ async fn iter_directory(dir: PathBuf) {
     for entry in fs::read_dir(current_dir).expect("Read current dir fail") {
         let entry = entry.expect("Get entry fail");
         let path = entry.path();
+        let path_str = path.to_str().expect("");
 
         if path.is_dir() {
-            iter_directory(entry.path());
+            if path_str.ends_with(".git") || path_str.ends_with("target") {
+                continue;
+            }
+            files.extend(iter_directory(entry.path()));
+
             continue;
         }
         let metadata = fs::metadata(&path).expect("Get metadata fail");
@@ -75,25 +81,26 @@ async fn iter_directory(dir: PathBuf) {
                 file_name,
                 hash.clone()
             );
+            files.push(HashedFile{file_name: String::from(path_str), hash });
         }
     }
+    files
 }
 
-#[tokio::main]
-pub async fn main() -> Result<(), sqlx::Error> {
-    let mut conn = sqlx::SqliteConnection::connect("sqlite::memory:").await?;
-    sqlx::query("CREATE TABLE \"file_table\" (
+fn main() {
+    let conn = Connection::open_in_memory().expect("Create sqlite connection error");
+    //let mut conn = sqlx::SqliteConnection::connect("sqlite::memory:").await?;
+    conn.execute("CREATE TABLE \"file_table\" (
         \"path\"	TEXT NOT NULL,
         \"hash\"	TEXT NOT NULL,
         PRIMARY KEY(\"hash\")
-    );").execute(&mut conn).await?;
-    iter_directory(env::current_dir().expect("Get current dir fail"));
-
-    /*sqlx::query("INSERT INTO `file_table` VALUE (?, ?)")
-        .bind(String::from(file_name.to_str().expect("")))
-        .bind(hash.clone())
-        .execute(conn)
-        .await;*/
-    conn.close().await?;
-    Ok(())
+        );",
+    params![]
+    ).expect("Create table fail");
+    let files = iter_directory(env::current_dir().expect("Get current dir fail"));
+    println!("{}", files.len());
+    files.iter().map(|x|{
+        conn.execute("INSERT INTO \"file_table\" VALUE (?1, ?2)", params![x.file_name, x.hash]).expect("Insert data fail");
+    });
+    conn.close().expect("Close connection error");
 }
