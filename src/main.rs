@@ -23,7 +23,7 @@ use std::fs::File;
 use std::io::Read;
 use std::{env, fs};
 use std::path::PathBuf;
-use rusqlite::{params, Connection, Result};
+use rusqlite::{params, Connection};
 
 #[derive(Debug)]
 struct HashedFile {
@@ -51,10 +51,7 @@ fn iter_directory(dir: PathBuf) -> Vec<HashedFile> {
     //env::set_current_dir(PathBuf::from(dir));
     let mut files = Vec::new();
     let current_dir = dir;
-    println!(
-        "in {:?}:",
-        current_dir
-    );
+    println!("in {}:", current_dir.to_str().unwrap());
 
     for entry in fs::read_dir(current_dir).expect("Read current dir fail") {
         let entry = entry.expect("Get entry fail");
@@ -99,8 +96,21 @@ fn main() {
     ).expect("Create table fail");
     let files = iter_directory(env::current_dir().expect("Get current dir fail"));
     println!("{}", files.len());
-    files.iter().map(|x|{
-        conn.execute("INSERT INTO \"file_table\" VALUE (?1, ?2)", params![x.file_name, x.hash]).expect("Insert data fail");
-    });
+    for f in files {
+        let mut stmt = conn.prepare("SELECT 1 FROM \"file_table\" WHERE \"hash\" = ?1")
+            .expect("Prepare statement fail");
+        let result = stmt.query_row(params![f.hash], |row| Ok({}));
+        match result {
+            Ok(_) => {
+                println!("Find duplicate file: {}", f.file_name);
+            },
+            Err(_e) => {
+                conn.execute(
+                    "INSERT INTO \"file_table\" VALUES (?1, ?2)",
+                    params![f.file_name, f.hash])
+                    .expect("Insert data fail");
+            }
+        }
+    }
     conn.close().expect("Close connection error");
 }
