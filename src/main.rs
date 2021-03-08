@@ -27,13 +27,6 @@ use std::sync::Arc;
 use sqlx::{Connection, SqliteConnection};
 use anyhow::Result;
 
-#[derive(Debug)]
-struct HashedFile {
-    file_name: String,
-    path: PathBuf,
-    hash: String
-}
-
 fn get_file_sha256(s: &PathBuf) -> Option<String> {
     let mut file = match File::open(&s) {
         Ok(file) => file,
@@ -55,61 +48,73 @@ fn get_file_sha256(s: &PathBuf) -> Option<String> {
     Option::from(format!("{:x}", result))
 }
 
-
-async fn iter_directory(dir: PathBuf, conn: Arc<Mutex<SqliteConnection>>, current_cwd_len: usize) -> Result<()> {
-
-    let current_dir = dir;
-    println!("in {}:", current_dir.to_str().unwrap());
-
-    for entry in fs::read_dir(current_dir).expect("Read current dir fail") {
-        let entry = entry.expect("Get entry fail");
+fn iter_directory(dir: &PathBuf) -> Result<Vec<PathBuf>> {
+    println!("in {}:", dir.to_str().unwrap());
+    let mut dirs: Vec<PathBuf> = Default::default();
+    let current_idr = dir;
+    for entry in fs::read_dir(current_idr)? {
+        let entry = entry?;
         let path = entry.path();
         let path_str = path.to_str().unwrap();
-
         if path.is_dir() {
             if path_str.ends_with(".git") || path_str.ends_with("target") || path_str.ends_with("samefile") {
                 println!("Skipped path: {}", path.to_str().unwrap());
                 continue;
             }
-            iter_directory(entry.path(), Arc::clone(&conn), current_cwd_len).await?;
-
-            continue;
+            dirs.push(path.clone());
+            dirs.extend(iter_directory(&path)?)
         }
+    }
+    Ok(dirs)
+}
 
-        let file_name = path.file_name().ok_or("No filename")
-            .expect("Get filename fail");
-        let hash = match get_file_sha256(&path) {
-            None => continue,
-            Some(hash) => hash
-        };
-        println!("filename: {:?}, sha256: {:?}", file_name, &hash);
-        let file_name = file_name.to_str().unwrap().to_string();
-        let dup = {
-            let mut conn = conn.lock().await;
-            let r = sqlx::query("SELECT 1 FROM 'file_table' WHERE 'hash' = ?")
-                .bind(hash.clone())
-                .fetch_all(&mut (*conn))
-                .await?;
-            if r.is_empty() {
-                sqlx::query("INSERT INTO \"file_table\" VALUES (?, ?)")
-                    .bind(file_name.clone())
-                    .bind( hash.clone())
-                    .execute(&mut (*conn))
-                    .await?;
+async fn iter_files(current_dir: PathBuf, conn: Arc<Mutex<SqliteConnection>>, current_cwd_len: usize) -> Result<()> {
+
+
+    for dir in iter_directory(&current_dir)? {
+        for entry in fs::read_dir(dir)? {
+            let path = entry?.path();
+            //let path_str = path.to_str().unwrap();
+            if path.is_dir() {
+                continue;
             }
-            r.is_empty()
-        };
-        if dup {
-            let target = String::from(path.clone().to_str().unwrap())
-                .split_at(current_cwd_len + 1)
-                .1
-                .replace("\\", ".")
-                .replace("/", ".");
-            let prefix = PathBuf::from("samehash/");
-            let rename_target = prefix.join(hash.clone()).join(target.clone());
-            println!("Find duplicate file: {}, move to: {:?}", file_name, rename_target.clone());
-            create_dir(hash.clone().as_str(), Option::from("samehash"));
-            fs::rename(path, rename_target).unwrap();
+
+            let file_name = path.file_name().ok_or("No filename")
+                .expect("Get filename fail");
+            let hash = match get_file_sha256(&path) {
+                None => continue,
+                Some(hash) => hash
+            };
+            println!("filename: {:?}, sha256: {:?}", file_name, &hash);
+            let file_name = file_name.to_str().unwrap().to_string();
+            let dup = {
+                let mut conn = conn.lock().await;
+                let r = sqlx::query("SELECT 1 FROM 'file_table' WHERE 'hash' = ?")
+                    .bind(hash.clone())
+                    .fetch_all(&mut (*conn))
+                    .await?;
+                if r.is_empty() {
+                    sqlx::query("INSERT INTO \"file_table\" VALUES (?, ?)")
+                        .bind(file_name.clone())
+                        .bind( hash.clone())
+                        .execute(&mut (*conn))
+                        .await?;
+                }
+                !r.is_empty()
+            };
+
+            if dup {
+                let target = String::from(path.clone().to_str().unwrap())
+                    .split_at(current_cwd_len + 1)
+                    .1
+                    .replace("\\", ".")
+                    .replace("/", ".");
+                let prefix = PathBuf::from("samehash/");
+                let rename_target = prefix.join(hash.clone()).join(target.clone());
+                println!("Find duplicate file: {}, move to: {:?}", file_name, rename_target.clone());
+                create_dir(hash.clone().as_str(), Option::from("samehash"));
+                fs::rename(path, rename_target).unwrap();
+            }
         }
     }
     Ok(())
@@ -126,6 +131,7 @@ fn create_dir(p: &str, d: Option<&str>) {
     }
 }
 
+
 #[tokio::main]
 async fn main() ->Result<()> {
     let mut conn = SqliteConnection::connect("sqlite::memory:").await?;
@@ -141,7 +147,7 @@ async fn main() ->Result<()> {
     create_dir("samehash", None);
     println!("Current path: {}", cwd.to_str().unwrap());
     let arc = Arc::new(Mutex::new(conn));
-    let files = iter_directory(cwd, arc.clone(), current_cwd_len).await?;
+    iter_files(cwd, arc.clone(), current_cwd_len).await?;
 
     drop(arc);
     Ok(())
