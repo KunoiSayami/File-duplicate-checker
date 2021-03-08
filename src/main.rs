@@ -22,8 +22,6 @@ use std::fs::File;
 use std::io::{Read, ErrorKind};
 use std::{env, fs};
 use std::path::PathBuf;
-use tokio::sync::Mutex;
-use std::sync::Arc;
 use sqlx::{Connection, SqliteConnection};
 use anyhow::Result;
 
@@ -50,26 +48,35 @@ fn get_file_sha256(s: &PathBuf) -> Option<String> {
 
 fn iter_directory(dir: &PathBuf) -> Result<Vec<PathBuf>> {
     println!("in {}:", dir.to_str().unwrap());
-    let mut dirs: Vec<PathBuf> = Default::default();
+    let mut dirs = vec![dir.clone()];
     let current_idr = dir;
     for entry in fs::read_dir(current_idr)? {
         let entry = entry?;
         let path = entry.path();
         let path_str = path.to_str().unwrap();
         if path.is_dir() {
-            if path_str.ends_with(".git") || path_str.ends_with("target") || path_str.ends_with("samefile") {
+            if path_str.ends_with(".git") || path_str.ends_with("target") || path_str.ends_with("samehash") {
                 println!("Skipped path: {}", path.to_str().unwrap());
                 continue;
             }
-            dirs.push(path.clone());
+            //dirs.push(path.clone());
             dirs.extend(iter_directory(&path)?)
         }
     }
     Ok(dirs)
 }
 
-async fn iter_files(current_dir: PathBuf, conn: Arc<Mutex<SqliteConnection>>, current_cwd_len: usize) -> Result<()> {
+async fn iter_files(current_dir: PathBuf) -> Result<u64> {
 
+    let mut num = 0u64;
+    let mut conn = SqliteConnection::connect("sqlite::memory:").await?;
+    sqlx::query("CREATE TABLE \"file_table\" (
+        \"path\"	TEXT NOT NULL,
+        \"hash\"	TEXT NOT NULL,
+        PRIMARY KEY(\"hash\")
+        );").execute(&mut conn)
+        .await?;
+    let current_dir_len = current_dir.to_str().unwrap().len();
 
     for dir in iter_directory(&current_dir)? {
         for entry in fs::read_dir(dir)? {
@@ -88,16 +95,15 @@ async fn iter_files(current_dir: PathBuf, conn: Arc<Mutex<SqliteConnection>>, cu
             println!("filename: {:?}, sha256: {:?}", file_name, &hash);
             let file_name = file_name.to_str().unwrap().to_string();
             let dup = {
-                let mut conn = conn.lock().await;
-                let r = sqlx::query("SELECT 1 FROM 'file_table' WHERE 'hash' = ?")
+                let r = sqlx::query(r#"SELECT 1 FROM "file_table" WHERE "hash" = ?"#)
                     .bind(hash.clone())
-                    .fetch_all(&mut (*conn))
+                    .fetch_all(&mut conn)
                     .await?;
                 if r.is_empty() {
                     sqlx::query("INSERT INTO \"file_table\" VALUES (?, ?)")
                         .bind(file_name.clone())
                         .bind( hash.clone())
-                        .execute(&mut (*conn))
+                        .execute(&mut conn)
                         .await?;
                 }
                 !r.is_empty()
@@ -105,7 +111,7 @@ async fn iter_files(current_dir: PathBuf, conn: Arc<Mutex<SqliteConnection>>, cu
 
             if dup {
                 let target = String::from(path.clone().to_str().unwrap())
-                    .split_at(current_cwd_len + 1)
+                    .split_at(current_dir_len)
                     .1
                     .replace("\\", ".")
                     .replace("/", ".");
@@ -114,10 +120,11 @@ async fn iter_files(current_dir: PathBuf, conn: Arc<Mutex<SqliteConnection>>, cu
                 println!("Find duplicate file: {}, move to: {:?}", file_name, rename_target.clone());
                 create_dir(hash.clone().as_str(), Option::from("samehash"));
                 fs::rename(path, rename_target).unwrap();
+                num += 1;
             }
         }
     }
-    Ok(())
+    Ok(num)
 }
 
 fn create_dir(p: &str, d: Option<&str>) {
@@ -132,23 +139,59 @@ fn create_dir(p: &str, d: Option<&str>) {
 }
 
 
+#[cfg(test)]
+mod test {
+    use super::*;
+    use std::path::Path;
+    use std::fs::OpenOptions;
+    use std::io::Write;
+
+    fn write_file(file_name: &str, bytes: usize) -> Result<()> {
+        let s = std::iter::repeat("\0").take(bytes).collect::<String>();
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(Path::join(Path::new("."), file_name))?;
+        file.write(s.as_bytes())?;
+        Ok(())
+    }
+
+    #[test]
+    fn test() {
+        let test_dir = Path::new("test");
+        if test_dir.exists() {
+            fs::remove_dir_all(test_dir).unwrap();
+        }
+
+        fs::create_dir(test_dir).unwrap();
+        std::env::set_current_dir(test_dir).unwrap();
+        fs::create_dir(Path::new("samehash")).unwrap();
+        write_file("1.txt", 5).unwrap();
+        write_file("2.txt", 5).unwrap();
+        write_file("3.txt", 5).unwrap();
+        write_file("4.txt", 5).unwrap();
+        write_file("5.txt", 6).unwrap();
+        write_file("114514.txt", 2048).unwrap();
+        write_file("9.txt", 2048).unwrap();
+        let current_env = env::current_dir().unwrap();
+        let r = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(iter_files(current_env))
+            .unwrap();
+        assert_eq!(r, 4);
+    }
+}
+
+
 #[tokio::main]
 async fn main() ->Result<()> {
-    let mut conn = SqliteConnection::connect("sqlite::memory:").await?;
-    sqlx::query("CREATE TABLE \"file_table\" (
-        \"path\"	TEXT NOT NULL,
-        \"hash\"	TEXT NOT NULL,
-        PRIMARY KEY(\"hash\")
-        );").execute(&mut conn)
-        .await?;
 
     let cwd = env::current_dir().unwrap();
-    let current_cwd_len = cwd.to_str().unwrap().len();
     create_dir("samehash", None);
     println!("Current path: {}", cwd.to_str().unwrap());
-    let arc = Arc::new(Mutex::new(conn));
-    iter_files(cwd, arc.clone(), current_cwd_len).await?;
+    iter_files(cwd).await?;
 
-    drop(arc);
     Ok(())
 }
