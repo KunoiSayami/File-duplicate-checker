@@ -6,7 +6,6 @@ edition = "2018"
 
 [dependencies]
 sha2 = "0.9.1"
-
-[dependencies.rusqlite]
-version = "0.24.1"
-features = ["bundled"]
+sqlx = { version = "0.5", features = [ "json", "sqlite", "runtime-actix-native-tls"] }
+tokio = { version = "1", features = ["full"] }
+anyhow = "1.0.38"

@@ -18,11 +18,14 @@
  ** along with this program. If not, see <https://www.gnu.org/licenses/>.
  */
 use sha2::{Sha256, Digest};
-use std::fs::{File, rename};
+use std::fs::File;
 use std::io::{Read, ErrorKind};
 use std::{env, fs};
 use std::path::PathBuf;
-use rusqlite::{params, Connection};
+use tokio::sync::Mutex;
+use std::sync::Arc;
+use sqlx::{Connection, SqliteConnection};
+use anyhow::Result;
 
 #[derive(Debug)]
 struct HashedFile {
@@ -52,9 +55,9 @@ fn get_file_sha256(s: &PathBuf) -> Option<String> {
     Option::from(format!("{:x}", result))
 }
 
-fn iter_directory(dir: PathBuf) -> Vec<HashedFile> {
 
-    let mut files = Vec::new();
+async fn iter_directory(dir: PathBuf, conn: Arc<Mutex<SqliteConnection>>, current_cwd_len: usize) -> Result<()> {
+
     let current_dir = dir;
     println!("in {}:", current_dir.to_str().unwrap());
 
@@ -68,7 +71,7 @@ fn iter_directory(dir: PathBuf) -> Vec<HashedFile> {
                 println!("Skipped path: {}", path.to_str().unwrap());
                 continue;
             }
-            files.extend(iter_directory(entry.path()));
+            iter_directory(entry.path(), Arc::clone(&conn), current_cwd_len).await?;
 
             continue;
         }
@@ -79,14 +82,37 @@ fn iter_directory(dir: PathBuf) -> Vec<HashedFile> {
             None => continue,
             Some(hash) => hash
         };
-        println!("filename: {:?}, sha256: {:?}", file_name, hash.clone());
-        files.push(HashedFile{
-            file_name: String::from(path_str),
-            path,
-            hash
-        });
+        println!("filename: {:?}, sha256: {:?}", file_name, &hash);
+        let file_name = file_name.to_str().unwrap().to_string();
+        let dup = {
+            let mut conn = conn.lock().await;
+            let r = sqlx::query("SELECT 1 FROM 'file_table' WHERE 'hash' = ?")
+                .bind(hash.clone())
+                .fetch_all(&mut (*conn))
+                .await?;
+            if r.is_empty() {
+                sqlx::query("INSERT INTO \"file_table\" VALUES (?, ?)")
+                    .bind(file_name.clone())
+                    .bind( hash.clone())
+                    .execute(&mut (*conn))
+                    .await?;
+            }
+            r.is_empty()
+        };
+        if dup {
+            let target = String::from(path.clone().to_str().unwrap())
+                .split_at(current_cwd_len + 1)
+                .1
+                .replace("\\", ".")
+                .replace("/", ".");
+            let prefix = PathBuf::from("samehash/");
+            let rename_target = prefix.join(hash.clone()).join(target.clone());
+            println!("Find duplicate file: {}, move to: {:?}", file_name, rename_target.clone());
+            create_dir(hash.clone().as_str(), Option::from("samehash"));
+            fs::rename(path, rename_target).unwrap();
+        }
     }
-    files
+    Ok(())
 }
 
 fn create_dir(p: &str, d: Option<&str>) {
@@ -100,49 +126,23 @@ fn create_dir(p: &str, d: Option<&str>) {
     }
 }
 
-fn main() {
-    let conn = Connection::open_in_memory().expect("Create sqlite connection error");
-    conn.execute("CREATE TABLE \"file_table\" (
+#[tokio::main]
+async fn main() ->Result<()> {
+    let mut conn = SqliteConnection::connect("sqlite::memory:").await?;
+    sqlx::query("CREATE TABLE \"file_table\" (
         \"path\"	TEXT NOT NULL,
         \"hash\"	TEXT NOT NULL,
         PRIMARY KEY(\"hash\")
-        );",
-    params![]
-    ).expect("Create table fail");
+        );").execute(&mut conn)
+        .await?;
 
     let cwd = env::current_dir().unwrap();
     let current_cwd_len = cwd.to_str().unwrap().len();
     create_dir("samehash", None);
     println!("Current path: {}", cwd.to_str().unwrap());
-    let files = iter_directory(cwd);
+    let arc = Arc::new(Mutex::new(conn));
+    let files = iter_directory(cwd, arc.clone(), current_cwd_len).await?;
 
-    for f in files {
-        let mut stmt = conn.prepare("SELECT 1 FROM \"file_table\" WHERE \"hash\" = ?1")
-            .expect("Prepare statement fail");
-        let result = stmt.query_row(params![f.hash], |_row| Ok(()));
-        match result {
-            Ok(_) => {
-                let target = String::from(f.path.clone().to_str().unwrap())
-                    .split_at(current_cwd_len + 1)
-                    .1
-                    .replace("\\", ".")
-                    .replace("/", ".");
-                let prefix = PathBuf::from("samehash/");
-                let rename_target = prefix.join(f.hash.clone()).join(target.clone());
-                println!("Find duplicate file: {}, move to: {:?}", f.file_name, rename_target.clone());
-                create_dir(f.hash.clone().as_str(), Option::from("samehash"));
-                let _result = rename(f.path, rename_target).unwrap();
-            },
-            Err(e) => match e {
-                rusqlite::Error::QueryReturnedNoRows => {
-                    conn.execute(
-                        "INSERT INTO \"file_table\" VALUES (?1, ?2)",
-                        params![f.file_name, f.hash])
-                        .expect("Insert data fail");
-                }
-                _ => eprintln!("Query problem: {:?}", e)
-            }
-        }
-    }
-    conn.close().expect("Close connection error");
+    drop(arc);
+    Ok(())
 }
