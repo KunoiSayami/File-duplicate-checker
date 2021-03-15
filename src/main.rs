@@ -66,10 +66,16 @@ fn iter_directory(dir: &PathBuf) -> Result<Vec<PathBuf>> {
     Ok(dirs)
 }
 
-async fn iter_files(current_dir: PathBuf) -> Result<u64> {
+async fn iter_files(current_dir: PathBuf, path_db: Option<&str>) -> Result<u64> {
 
     let mut num = 0u64;
-    let mut conn = SqliteConnection::connect("sqlite::memory:").await?;
+    if path_db.is_some() {
+        let file = std::path::Path::new(path_db.clone().unwrap());
+        if !file.exists() {
+            std::fs::File::create(file)?;
+        }
+    }
+    let mut conn = SqliteConnection::connect(path_db.unwrap_or("sqlite::memory:")).await?;
     sqlx::query("CREATE TABLE \"file_table\" (
         \"path\"	TEXT NOT NULL,
         \"hash\"	TEXT NOT NULL,
@@ -81,13 +87,17 @@ async fn iter_files(current_dir: PathBuf) -> Result<u64> {
     for dir in iter_directory(&current_dir)? {
         for entry in fs::read_dir(dir)? {
             let path = entry?.path();
-            //let path_str = path.to_str().unwrap();
+            let path_str = path.to_str().unwrap();
             if path.is_dir() {
                 continue;
             }
 
             let file_name = path.file_name().ok_or("No filename")
                 .expect("Get filename fail");
+
+            if vec![".py", ".db"].into_iter().any(|x| path_str.ends_with(x)) {
+                continue
+            }
             let hash = match get_file_sha256(&path) {
                 None => continue,
                 Some(hash) => hash
@@ -178,7 +188,7 @@ mod test {
             .enable_all()
             .build()
             .unwrap()
-            .block_on(iter_files(current_env))
+            .block_on(iter_files(current_env, None))
             .unwrap();
         assert_eq!(r, 4);
     }
@@ -191,7 +201,13 @@ async fn main() ->Result<()> {
     let cwd = env::current_dir().unwrap();
     create_dir("samehash", None);
     println!("Current path: {}", cwd.to_str().unwrap());
-    iter_files(cwd).await?;
+    iter_files(cwd, {
+        if std::env::args().into_iter().any(|x| x.eq("--memory")) {
+            None
+        } else {
+            Some("samehash.db")
+        }
+    }).await?;
 
     Ok(())
 }
