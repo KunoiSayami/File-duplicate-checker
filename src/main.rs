@@ -112,7 +112,7 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>) -> Result<u64> 
                 Some(hash) => hash
             };
             current_progress += 1;
-            println!("\r({}/{}), name: {:?}", current_progress, approximately_file_num, file_name);
+            print!("\r({}/{}), name: {:?}", current_progress, approximately_file_num, file_name);
             let file_name = file_name.to_str().unwrap().to_string();
             let dup = {
                 let r = sqlx::query(r#"SELECT 1 FROM "file_table" WHERE "hash" = ?"#)
@@ -137,7 +137,7 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>) -> Result<u64> 
                     .replace("/", ".");
                 let prefix = PathBuf::from("samehash/");
                 let rename_target = prefix.join(hash.clone()).join(target.clone());
-                println!("Find duplicate file: {}, move to: {:?}", file_name, rename_target.clone());
+                println!("\nFind duplicate file: {}, move to: {:?}", file_name, rename_target.clone());
                 create_dir(hash.clone().as_str(), Option::from("samehash"));
                 fs::rename(path, rename_target).unwrap();
                 num += 1;
