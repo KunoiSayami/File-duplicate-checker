@@ -19,7 +19,7 @@
  */
 use sha2::{Sha256, Digest};
 use std::fs::File;
-use std::io::{Read, ErrorKind};
+use std::io::{Read, ErrorKind, Write};
 use std::{env, fs};
 use std::path::PathBuf;
 use sqlx::{Connection, SqliteConnection};
@@ -82,12 +82,16 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>) -> Result<u64> 
         }
     }
     let mut conn = SqliteConnection::connect(path_db.unwrap_or("sqlite::memory:")).await?;
-    sqlx::query("CREATE TABLE \"file_table\" (
-        \"path\"	TEXT NOT NULL,
-        \"hash\"	TEXT NOT NULL,
-        PRIMARY KEY(\"hash\")
-        );").execute(&mut conn)
-        .await?;
+    if sqlx::query(r#"SELECT name FROM sqlite_master WHERE type='table' AND "name"='file_table' "#)
+        .fetch_all(&mut conn)
+        .await?.is_empty() {
+        sqlx::query("CREATE TABLE \"file_table\" (
+                \"path\"	TEXT NOT NULL,
+                \"hash\"	TEXT NOT NULL,
+                PRIMARY KEY(\"hash\")
+                );").execute(&mut conn)
+            .await?;
+    }
     let current_dir_len = current_dir.to_str().unwrap().len();
 
     let (directories, approximately_file_num) = iter_directory(&current_dir)?;
@@ -104,15 +108,16 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>) -> Result<u64> 
             let file_name = path.file_name().ok_or("No filename")
                 .expect("Get filename fail");
 
-            if vec![".py", ".db"].into_iter().any(|x| path_str.ends_with(x)) {
+            if vec![".py", ".db", ".json"].into_iter().any(|x| path_str.ends_with(x)) {
                 continue
             }
+            current_progress += 1;
+            print!("\r({}/{}), name: {:<20?}", current_progress, approximately_file_num, file_name);
+            std::io::stdout().flush()?;
             let hash = match get_file_sha256(&path) {
                 None => continue,
                 Some(hash) => hash
             };
-            current_progress += 1;
-            print!("\r({}/{}), name: {:?}", current_progress, approximately_file_num, file_name);
             let file_name = file_name.to_str().unwrap().to_string();
             let dup = {
                 let r = sqlx::query(r#"SELECT 1 FROM "file_table" WHERE "hash" = ?"#)
@@ -137,7 +142,7 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>) -> Result<u64> 
                     .replace("/", ".");
                 let prefix = PathBuf::from("samehash/");
                 let rename_target = prefix.join(hash.clone()).join(target.clone());
-                println!("\nFind duplicate file: {}, move to: {:?}", file_name, rename_target.clone());
+                println!("\rFind duplicate file: {}, move to: {:?}", file_name, rename_target.clone());
                 create_dir(hash.clone().as_str(), Option::from("samehash"));
                 fs::rename(path, rename_target).unwrap();
                 num += 1;
