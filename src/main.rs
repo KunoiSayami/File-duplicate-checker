@@ -135,11 +135,12 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>) -> Result<u64> 
             };
 
             if dup {
-                let target = String::from(path.clone().to_str().unwrap())
-                    .split_at(current_dir_len)
+                let target = path.clone().to_str()
+                    .unwrap()
+                    .to_string()
+                    .split_at(current_dir_len + 1)
                     .1
-                    .replace("\\", ".")
-                    .replace("/", ".");
+                    .replace(if cfg!(windows) {'\\'} else {'/'}, "[0x44]");
                 let prefix = PathBuf::from("samehash/");
                 let rename_target = prefix.join(hash.clone()).join(target.clone());
                 println!("\rFind duplicate file: {}, move to: {:?}", file_name, rename_target.clone());
@@ -163,6 +164,20 @@ fn create_dir(p: &str, d: Option<&str>) {
     }
 }
 
+fn revert_function() -> Result<()> {
+    for entry in fs::read_dir("samehash")? {
+        let path = entry?.path();
+        for item in fs::read_dir(path)? {
+            let item = item?;
+            let filename = item.file_name().to_str().unwrap().to_string().replace("[0x44]", if cfg!(windows) {"\\"} else {"/"});
+            let target = std::path::Path::new(".").join(&filename);
+            //println!("{:?}", target);
+            fs::rename(item.path(), target)?;
+            println!("Move {:?} to {}", item.file_name(), filename)
+        }
+    }
+    Ok(())
+}
 
 #[cfg(test)]
 mod test {
@@ -207,8 +222,16 @@ mod test {
             .unwrap();
         assert_eq!(r, 4);
     }
-}
 
+    #[test]
+    fn test_revert() {
+        let cwd = std::env::current_dir().unwrap();
+        if !cwd.ends_with("test") {
+            panic!("Should specify --test-threads=1 in args")
+        }
+        revert_function().unwrap();
+    }
+}
 
 #[tokio::main]
 async fn main() ->Result<()> {
