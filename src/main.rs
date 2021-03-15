@@ -46,8 +46,9 @@ fn get_file_sha256(s: &PathBuf) -> Option<String> {
     Option::from(format!("{:x}", result))
 }
 
-fn iter_directory(dir: &PathBuf) -> Result<Vec<PathBuf>> {
+fn iter_directory(dir: &PathBuf) -> Result<(Vec<PathBuf>, u32)> {
     println!("in {}:", dir.to_str().unwrap());
+    let mut files = 0u32;
     let mut dirs = vec![dir.clone()];
     let current_idr = dir;
     for entry in fs::read_dir(current_idr)? {
@@ -60,10 +61,15 @@ fn iter_directory(dir: &PathBuf) -> Result<Vec<PathBuf>> {
                 continue;
             }
             //dirs.push(path.clone());
-            dirs.extend(iter_directory(&path)?)
+            let r = iter_directory(&path)?;
+            dirs.extend(r.0);
+            files += r.1;
+        }
+        else {
+            files += 1;
         }
     }
-    Ok(dirs)
+    Ok((dirs, files))
 }
 
 async fn iter_files(current_dir: PathBuf, path_db: Option<&str>) -> Result<u64> {
@@ -84,7 +90,10 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>) -> Result<u64> 
         .await?;
     let current_dir_len = current_dir.to_str().unwrap().len();
 
-    for dir in iter_directory(&current_dir)? {
+    let (directories, approximately_file_num) = iter_directory(&current_dir)?;
+    let mut current_progress = 0u32;
+    println!();
+    for dir in directories {
         for entry in fs::read_dir(dir)? {
             let path = entry?.path();
             let path_str = path.to_str().unwrap();
@@ -102,7 +111,8 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>) -> Result<u64> 
                 None => continue,
                 Some(hash) => hash
             };
-            println!("filename: {:?}, sha256: {:?}", file_name, &hash);
+            current_progress += 1;
+            println!("\r({}/{}), name: {:?}", current_progress, approximately_file_num, file_name);
             let file_name = file_name.to_str().unwrap().to_string();
             let dup = {
                 let r = sqlx::query(r#"SELECT 1 FROM "file_table" WHERE "hash" = ?"#)
