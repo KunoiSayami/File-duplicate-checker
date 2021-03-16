@@ -1,5 +1,5 @@
 /*
- ** Copyright (C) 2020 KunoiSayami
+ ** Copyright (C) 2020-2021 KunoiSayami
  **
  ** This file is part of File-duplicate-checker and is released under
  ** the AGPL v3 License: https://www.gnu.org/licenses/agpl-3.0.txt
@@ -18,27 +18,32 @@
  ** along with this program. If not, see <https://www.gnu.org/licenses/>.
  */
 use sha2::{Sha256, Digest};
-use std::fs::File;
-use std::io::{Read, ErrorKind, Write};
+use tokio::fs::File;
+use std::io::{ErrorKind, Write};
 use std::{env, fs};
 use std::path::PathBuf;
 use sqlx::{Connection, SqliteConnection};
 use anyhow::Result;
+use tokio::io::{BufReader, AsyncReadExt};
+use sha2::digest::DynDigest;
 
-fn get_file_sha256(s: &PathBuf) -> Option<String> {
-    let mut file = match File::open(&s) {
+const BUFFER_SIZE: usize = 1024*16;
+
+async fn get_file_sha256(s: &PathBuf) -> Option<String> {
+    let file = match File::open(&s).await {
         Ok(file) => file,
         Err(error) => {
             eprintln!("Open {:?} error {:?}", s, error);
             return None
         }
     };
+    let mut file = BufReader::new(file);
     let mut sha256 = Sha256::new();
-    let mut buffer = [0; 1024];
+    let mut buffer: [u8; BUFFER_SIZE] = [0; BUFFER_SIZE];
     loop {
-        let size = file.read(&mut buffer).expect("Fail");
-        sha256.update(&buffer[..size]);
-        if size < 1024 {
+        let size = file.read(&mut buffer).await.ok()?;
+        DynDigest::update(&mut sha256, &buffer[0..size]);
+        if size < BUFFER_SIZE {
             break
         }
     }
@@ -47,17 +52,17 @@ fn get_file_sha256(s: &PathBuf) -> Option<String> {
 }
 
 fn iter_directory(dir: &PathBuf) -> Result<(Vec<PathBuf>, u32)> {
-    println!("in {}:", dir.to_str().unwrap());
     let mut files = 0u32;
     let mut dirs = vec![dir.clone()];
     let current_idr = dir;
+    let mut skipped: Vec<String> = Default::default();
     for entry in fs::read_dir(current_idr)? {
         let entry = entry?;
         let path = entry.path();
         let path_str = path.to_str().unwrap();
         if path.is_dir() {
             if path_str.ends_with(".git") || path_str.ends_with("target") || path_str.ends_with("samehash") {
-                println!("Skipped path: {}", path.to_str().unwrap());
+                skipped.push(path.to_str().unwrap_or("").to_string());
                 continue;
             }
             //dirs.push(path.clone());
@@ -68,6 +73,10 @@ fn iter_directory(dir: &PathBuf) -> Result<(Vec<PathBuf>, u32)> {
         else {
             files += 1;
         }
+    }
+    println!("in {}: ({})", dir.to_str().unwrap_or(""), files);
+    for x in skipped {
+        println!("Skipped path: {}", x);
     }
     Ok((dirs, files))
 }
@@ -108,13 +117,14 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>) -> Result<u64> 
             let file_name = path.file_name().ok_or("No filename")
                 .expect("Get filename fail");
 
-            if vec![".py", ".db", ".json"].into_iter().any(|x| path_str.ends_with(x)) {
+            current_progress += 1;
+            if vec![".py", ".db", ".json", ".exe", ".o", "db-wal"].into_iter().any(|x| path_str.ends_with(x)) {
+                //println!("Skipped: {:?}", file_name);
                 continue
             }
-            current_progress += 1;
-            print!("\r({}/{}), name: {:<20?}", current_progress, approximately_file_num, file_name);
+            print!("\r({}/{}), name: {:<52}", current_progress, approximately_file_num, file_name.to_str().unwrap_or(""));
             std::io::stdout().flush()?;
-            let hash = match get_file_sha256(&path) {
+            let hash = match get_file_sha256(&path).await {
                 None => continue,
                 Some(hash) => hash
             };
@@ -141,7 +151,7 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>) -> Result<u64> 
                     .split_at(current_dir_len + 1)
                     .1
                     .replace(if cfg!(windows) {'\\'} else {'/'}, "[0x44]");
-                let prefix = PathBuf::from("samehash/");
+                let prefix = PathBuf::from("samehash");
                 let rename_target = prefix.join(hash.clone()).join(target.clone());
                 println!("\rFind duplicate file: {}, move to: {:?}", file_name, rename_target.clone());
                 create_dir(hash.clone().as_str(), Option::from("samehash"));
@@ -171,7 +181,6 @@ fn revert_function() -> Result<()> {
             let item = item?;
             let filename = item.file_name().to_str().unwrap().to_string().replace("[0x44]", if cfg!(windows) {"\\"} else {"/"});
             let target = std::path::Path::new(".").join(&filename);
-            //println!("{:?}", target);
             fs::rename(item.path(), target)?;
             println!("Move {:?} to {}", item.file_name(), filename)
         }
@@ -235,6 +244,10 @@ mod test {
 
 #[tokio::main]
 async fn main() ->Result<()> {
+    if std::env::args().into_iter().any(|x| x.eq("--revert")) {
+        return Ok(revert_function()?)
+    }
+
 
     let cwd = env::current_dir().unwrap();
     create_dir("samehash", None);
