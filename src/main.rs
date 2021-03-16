@@ -17,24 +17,24 @@
  ** You should have received a copy of the GNU Affero General Public License
  ** along with this program. If not, see <https://www.gnu.org/licenses/>.
  */
-use sha2::{Sha256, Digest};
-use tokio::fs::File;
-use std::io::{ErrorKind, Write};
-use std::{env, fs};
-use std::path::PathBuf;
-use sqlx::{Connection, SqliteConnection};
 use anyhow::Result;
-use tokio::io::{BufReader, AsyncReadExt};
 use sha2::digest::DynDigest;
+use sha2::{Digest, Sha256};
+use sqlx::{Connection, SqliteConnection};
+use std::io::{ErrorKind, Write};
+use std::path::PathBuf;
+use std::{env, fs};
+use tokio::fs::File;
+use tokio::io::{AsyncReadExt, BufReader};
 
-const BUFFER_SIZE: usize = 1024*16;
+const BUFFER_SIZE: usize = 1024 * 16;
 
 async fn get_file_sha256(s: &PathBuf) -> Option<String> {
     let file = match File::open(&s).await {
         Ok(file) => file,
         Err(error) => {
             eprintln!("Open {:?} error {:?}", s, error);
-            return None
+            return None;
         }
     };
     let mut file = BufReader::new(file);
@@ -44,7 +44,7 @@ async fn get_file_sha256(s: &PathBuf) -> Option<String> {
         let size = file.read(&mut buffer).await.ok()?;
         DynDigest::update(&mut sha256, &buffer[0..size]);
         if size < BUFFER_SIZE {
-            break
+            break;
         }
     }
     let result = sha256.finalize();
@@ -61,7 +61,10 @@ fn iter_directory(dir: &PathBuf) -> Result<(Vec<PathBuf>, u32)> {
         let path = entry.path();
         let path_str = path.to_str().unwrap();
         if path.is_dir() {
-            if path_str.ends_with(".git") || path_str.ends_with("target") || path_str.ends_with("samehash") {
+            if path_str.ends_with(".git")
+                || path_str.ends_with("target")
+                || path_str.ends_with("samehash")
+            {
                 skipped.push(path.to_str().unwrap_or("").to_string());
                 continue;
             }
@@ -69,8 +72,7 @@ fn iter_directory(dir: &PathBuf) -> Result<(Vec<PathBuf>, u32)> {
             let r = iter_directory(&path)?;
             dirs.extend(r.0);
             files += r.1;
-        }
-        else {
+        } else {
             files += 1;
         }
     }
@@ -82,7 +84,6 @@ fn iter_directory(dir: &PathBuf) -> Result<(Vec<PathBuf>, u32)> {
 }
 
 async fn iter_files(current_dir: PathBuf, path_db: Option<&str>) -> Result<u64> {
-
     let mut num = 0u64;
     if path_db.is_some() {
         let file = std::path::Path::new(path_db.clone().unwrap());
@@ -93,13 +94,18 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>) -> Result<u64> 
     let mut conn = SqliteConnection::connect(path_db.unwrap_or("sqlite::memory:")).await?;
     if sqlx::query(r#"SELECT name FROM sqlite_master WHERE type='table' AND "name"='file_table' "#)
         .fetch_all(&mut conn)
-        .await?.is_empty() {
-        sqlx::query("CREATE TABLE \"file_table\" (
+        .await?
+        .is_empty()
+    {
+        sqlx::query(
+            "CREATE TABLE \"file_table\" (
                 \"path\"	TEXT NOT NULL,
                 \"hash\"	TEXT NOT NULL,
                 PRIMARY KEY(\"hash\")
-                );").execute(&mut conn)
-            .await?;
+                );",
+        )
+        .execute(&mut conn)
+        .await?;
     }
     let current_dir_len = current_dir.to_str().unwrap().len();
 
@@ -114,19 +120,29 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>) -> Result<u64> 
                 continue;
             }
 
-            let file_name = path.file_name().ok_or("No filename")
+            let file_name = path
+                .file_name()
+                .ok_or("No filename")
                 .expect("Get filename fail");
 
             current_progress += 1;
-            if vec![".py", ".db", ".json", ".exe", ".o", "db-wal"].into_iter().any(|x| path_str.ends_with(x)) {
+            if vec![".py", ".db", ".json", ".exe", ".o", "db-wal"]
+                .into_iter()
+                .any(|x| path_str.ends_with(x))
+            {
                 //println!("Skipped: {:?}", file_name);
-                continue
+                continue;
             }
-            print!("\r({}/{}), name: {:<52}", current_progress, approximately_file_num, file_name.to_str().unwrap_or(""));
+            print!(
+                "\r({}/{}), name: {:<52}",
+                current_progress,
+                approximately_file_num,
+                file_name.to_str().unwrap_or("")
+            );
             std::io::stdout().flush()?;
             let hash = match get_file_sha256(&path).await {
                 None => continue,
-                Some(hash) => hash
+                Some(hash) => hash,
             };
             let file_name = file_name.to_str().unwrap().to_string();
             let dup = {
@@ -136,8 +152,8 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>) -> Result<u64> 
                     .await?;
                 if r.is_empty() {
                     sqlx::query("INSERT INTO \"file_table\" VALUES (?, ?)")
-                        .bind(file_name.clone())
-                        .bind( hash.clone())
+                        .bind(path_str)
+                        .bind(hash.clone())
                         .execute(&mut conn)
                         .await?;
                 }
@@ -145,15 +161,21 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>) -> Result<u64> 
             };
 
             if dup {
-                let target = path.clone().to_str()
+                let target = path
+                    .clone()
+                    .to_str()
                     .unwrap()
                     .to_string()
                     .split_at(current_dir_len + 1)
                     .1
-                    .replace(if cfg!(windows) {'\\'} else {'/'}, "[0x44]");
+                    .replace(if cfg!(windows) { '\\' } else { '/' }, "[0x44]");
                 let prefix = PathBuf::from("samehash");
                 let rename_target = prefix.join(hash.clone()).join(target.clone());
-                println!("\rFind duplicate file: {}, move to: {:?}", file_name, rename_target.clone());
+                println!(
+                    "\rFind duplicate file: {}, move to: {:?}",
+                    file_name,
+                    rename_target.clone()
+                );
                 create_dir(hash.clone().as_str(), Option::from("samehash"));
                 fs::rename(path, rename_target).unwrap();
                 num += 1;
@@ -169,8 +191,8 @@ fn create_dir(p: &str, d: Option<&str>) {
         Ok(_) => {}
         Err(e) => match e.kind() {
             ErrorKind::AlreadyExists => {}
-            _ => panic!("Fatal error: {:?}", e)
-        }
+            _ => panic!("Fatal error: {:?}", e),
+        },
     }
 }
 
@@ -179,7 +201,12 @@ fn revert_function() -> Result<()> {
         let path = entry?.path();
         for item in fs::read_dir(path)? {
             let item = item?;
-            let filename = item.file_name().to_str().unwrap().to_string().replace("[0x44]", if cfg!(windows) {"\\"} else {"/"});
+            let filename = item
+                .file_name()
+                .to_str()
+                .unwrap()
+                .to_string()
+                .replace("[0x44]", if cfg!(windows) { "\\" } else { "/" });
             let target = std::path::Path::new(".").join(&filename);
             fs::rename(item.path(), target)?;
             println!("Move {:?} to {}", item.file_name(), filename)
@@ -191,9 +218,9 @@ fn revert_function() -> Result<()> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use std::path::Path;
     use std::fs::OpenOptions;
     use std::io::Write;
+    use std::path::Path;
 
     fn write_file(file_name: &str, bytes: usize) -> Result<()> {
         let s = std::iter::repeat("\0").take(bytes).collect::<String>();
@@ -243,11 +270,10 @@ mod test {
 }
 
 #[tokio::main]
-async fn main() ->Result<()> {
+async fn main() -> Result<()> {
     if std::env::args().into_iter().any(|x| x.eq("--revert")) {
-        return Ok(revert_function()?)
+        return Ok(revert_function()?);
     }
-
 
     let cwd = env::current_dir().unwrap();
     create_dir("samehash", None);
@@ -258,7 +284,8 @@ async fn main() ->Result<()> {
         } else {
             Some("samehash.db")
         }
-    }).await?;
+    })
+    .await?;
 
     Ok(())
 }
