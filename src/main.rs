@@ -21,7 +21,7 @@ use anyhow::Result;
 use sha2::digest::DynDigest;
 use sha2::{Digest, Sha256};
 use sqlx::{Connection, SqliteConnection};
-use std::io::{ErrorKind, Write};
+use std::io::{ErrorKind, Write, stdout, stdin};
 use std::path::{Path, PathBuf};
 use std::{env, fs};
 use tokio::fs::File;
@@ -30,6 +30,14 @@ use std::str::FromStr;
 
 const BUFFER_SIZE: usize = 1024 * 16;
 const MAX_SIZE_LIMIT: usize = usize::MAX;
+
+// https://www.reddit.com/r/rust/comments/8tfyof/noob_question_pause/
+fn pause() {
+    let mut stdout = stdout();
+    stdout.write(b"Press Enter to continue...").unwrap();
+    stdout.flush().unwrap();
+    std::io::Read::read(&mut stdin(), &mut [0]).unwrap();
+}
 
 async fn get_file_sha256(s: &Path, read_size: usize) -> Option<String> {
     let file = match File::open(&s).await {
@@ -140,7 +148,7 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>) -> Result<u64> 
                 continue;
             }
             print!(
-                "\r({}/{}), name: {:<52}",
+                "\r({}/{}), name: {:<30}",
                 current_progress,
                 approximately_file_num,
                 file_name.to_str().unwrap_or("")
@@ -177,6 +185,9 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>) -> Result<u64> 
             };
             let mut dup = false;
             for row in rows {
+                if row.0.eq(path_str) {
+                    continue
+                }
                 let l_hash = if row.3.is_some() {
                     row.3.clone().unwrap()
                 } else if let Some(hash) = get_file_sha256(&PathBuf::from_str(&row.0).unwrap() , MAX_SIZE_LIMIT).await {
@@ -222,6 +233,7 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>) -> Result<u64> 
             }
         }
     }
+    println!();
     Ok(num)
 }
 
@@ -272,34 +284,48 @@ mod test {
         Ok(())
     }
 
-    #[test]
-    fn test() {
+
+    fn main_test() -> Result<u64> {
         let test_dir = Path::new("test");
         if test_dir.exists() {
-            fs::remove_dir_all(test_dir).unwrap();
+            fs::remove_dir_all(test_dir)?;
         }
 
-        fs::create_dir(test_dir).unwrap();
-        std::env::set_current_dir(test_dir).unwrap();
-        fs::create_dir(Path::new("samehash")).unwrap();
-        write_file("1.txt", 5).unwrap();
-        write_file("2.txt", 5).unwrap();
-        write_file("3.txt", 5).unwrap();
-        write_file("4.txt", 5).unwrap();
-        write_file("5.txt", 6).unwrap();
-        fs::create_dir(Path::new("subdir")).unwrap();
-        write_file("114514.txt", 2048).unwrap();
-        write_file("9.txt", 2048).unwrap();
-        write_file(Path::new("subdir").join("1919.txt").to_str().unwrap(), 2048 * 10).unwrap();
-        write_file(Path::new("subdir").join("810.txt").to_str().unwrap(), 2048 * 10).unwrap();
-        let current_env = env::current_dir().unwrap();
+        fs::create_dir(test_dir)?;
+        std::env::set_current_dir(test_dir)?;
+        fs::create_dir(Path::new("samehash"))?;
+        write_file("1.txt", 5)?;
+        write_file("2.txt", 5)?;
+        write_file("3.txt", 5)?;
+        write_file("4.txt", 5)?;
+        write_file("5.txt", 6)?;
+        fs::create_dir(Path::new("subdir"))?;
+        write_file("114514.txt", 2048)?;
+        write_file("9.txt", 2048)?;
+        write_file(Path::new("subdir").join("1919.txt").to_str().unwrap(), 2048 * 10)?;
+        write_file(Path::new("subdir").join("810.txt").to_str().unwrap(), 2048 * 10)?;
+        let current_env = env::current_dir()?;
         let r = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?
+            .block_on(iter_files(current_env, Some("samehash.db")))?;
+        Ok(r)
+    }
+
+    #[test]
+    fn test() {
+        assert_eq!(main_test().unwrap(), 5);
+    }
+
+    #[test]
+    fn test_duplicate_run() {
+        let r = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
             .unwrap()
-            .block_on(iter_files(current_env, None))
+            .block_on(iter_files(env::current_dir().unwrap(), Some("samehash.db")))
             .unwrap();
-        assert_eq!(r, 5);
+        assert_eq!(r, 0);
     }
 
     #[test]
@@ -330,5 +356,5 @@ async fn main() -> Result<()> {
     })
     .await?;
 
-    Ok(())
+    Ok(pause())
 }

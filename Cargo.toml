@@ -1,6 +1,6 @@
 [package]
 name = "file_duplicate_checker"
-version = "3.0.0"
+version = "3.0.1"
 authors = ["KunoiSayami <46131041+KunoiSayami@users.noreply.github.com>"]
 edition = "2018"
 
@@ -9,4 +9,3 @@ sha2 = "0.9.1"
 sqlx = { version = "0.5", features = ["sqlite", "runtime-actix-native-tls"] }
 tokio = { version = "1", features = ["full"] }
 anyhow = "1.0.38"
-tokio-stream = "0.1.4"
