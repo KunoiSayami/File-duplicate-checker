@@ -125,6 +125,7 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>) -> Result<u64> 
 
     let (directories, approximately_file_num) = iter_directory(&current_dir)?;
     let mut current_progress = 0u32;
+    let mut last_filename_length = 0;
     println!();
     for dir in directories {
         for entry in fs::read_dir(dir)? {
@@ -139,6 +140,7 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>) -> Result<u64> 
                 .file_name()
                 .ok_or("No filename")
                 .expect("Get filename fail");
+            let file_name_str = file_name.to_str().unwrap_or("");
 
             current_progress += 1;
             if vec![".py", ".db", ".json", ".exe", ".o", "db-wal", "db-shm"]
@@ -149,11 +151,19 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>) -> Result<u64> 
                 continue;
             }
             print!(
-                "\r({}/{}), name: {:<30}",
+                "\r({}/{}), name: {}",
                 current_progress,
                 approximately_file_num,
-                file_name.to_str().unwrap_or("")
+                file_name_str
             );
+            let c = file_name_str.len();
+            if last_filename_length > c {
+                let mut s: Vec<char> = Default::default();
+                s.resize(last_filename_length - c, ' ');
+                print!("{}", s.into_iter().collect::<String>())
+            }
+            last_filename_length = c;
+
             std::io::stdout().flush()?;
             if let Ok(rows) = sqlx::query(r#"SELECT 1 FROM "files" WHERE "path" = ?"#)
                 .bind(path.to_str().unwrap().to_string())
@@ -391,9 +401,16 @@ async fn main() -> Result<()> {
     })
     .await?;
 
+    let elapsed = start_time.elapsed();
+    let (t, suffix) = if elapsed.as_millis() > 1000 {
+        (elapsed.as_secs(), "seconds")
+    } else {
+        (elapsed.as_millis() as u64, "milliseconds")
+    };
     println!(
-        "Time elapsed: {} milliseconds",
-        start_time.elapsed().as_millis()
+        "Time elapsed: {} {}",
+        t,
+        suffix
     );
     pause();
     Ok(())
