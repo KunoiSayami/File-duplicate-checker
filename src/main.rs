@@ -21,20 +21,21 @@ use anyhow::Result;
 use sha2::digest::DynDigest;
 use sha2::{Digest, Sha256};
 use sqlx::{Connection, SqliteConnection};
-use std::io::{ErrorKind, Write, stdout, stdin};
+use std::io::{stdin, stdout, ErrorKind, Write};
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use std::{env, fs};
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, BufReader};
-use std::str::FromStr;
 
 const BUFFER_SIZE: usize = 1024 * 16;
 const MAX_SIZE_LIMIT: usize = usize::MAX;
+const DEFAULT_DATABASE_FILE: &str = "samehash.db";
 
 // https://www.reddit.com/r/rust/comments/8tfyof/noob_question_pause/
 fn pause() {
     let mut stdout = stdout();
-    stdout.write(b"Press Enter to continue...").unwrap();
+    stdout.write_all(b"Press Enter to continue...").unwrap();
     stdout.flush().unwrap();
     std::io::Read::read(&mut stdin(), &mut [0]).unwrap();
 }
@@ -56,7 +57,7 @@ async fn get_file_sha256(s: &Path, read_size: usize) -> Option<String> {
         DynDigest::update(&mut sha256, &buffer[0..size]);
         rsize += size;
         if size < BUFFER_SIZE || rsize > read_size {
-            break
+            break;
         }
     }
     let result = sha256.finalize();
@@ -140,7 +141,7 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>) -> Result<u64> 
                 .expect("Get filename fail");
 
             current_progress += 1;
-            if vec![".py", ".db", ".json", ".exe", ".o", "db-wal"]
+            if vec![".py", ".db", ".json", ".exe", ".o", "db-wal", "db-shm"]
                 .into_iter()
                 .any(|x| path_str.ends_with(x))
             {
@@ -154,9 +155,30 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>) -> Result<u64> 
                 file_name.to_str().unwrap_or("")
             );
             std::io::stdout().flush()?;
-            let file_name = file_name.to_str().unwrap().to_string();
+            if let Ok(rows) = sqlx::query(r#"SELECT 1 FROM "files" WHERE "path" = ?"#)
+                .bind(path.to_str().unwrap().to_string())
+                .fetch_all(&mut conn)
+                .await
+            {
+                if !rows.is_empty() {
+                    continue;
+                }
+            }
 
             let file_size = entry.metadata()?.len();
+
+/*          let rows = sqlx::query(r#"SELECT * FROM "files" WHERE "size" = ?"#)
+                .bind(file_size as i64)
+                .fetch_all(&mut conn)
+                .await?;
+            if rows.is_empty() {
+                sqlx::query(r#"INSERT INTO "files" ("path", "size") VALUES (?, ?)"#)
+                    .bind(path.to_str().unwrap().to_string())
+                    .bind(file_size as i64)
+                    .execute(&mut conn)
+                    .await?;
+                continue;
+            }*/
 
             let p_hash = match get_file_sha256(&path, 128 * 1024).await {
                 Some(s) => s,
@@ -166,10 +188,10 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>) -> Result<u64> 
             let rows = sqlx::query_as::<_, (String, i64, String, Option<String>)>(
                 r#"SELECT * FROM "files" WHERE "size" = ? AND "hhash" = ?"#,
             )
-                .bind(file_size as i64)
-                .bind(p_hash.clone())
-                .fetch_all(&mut conn)
-                .await?;
+            .bind(file_size as i64)
+            .bind(p_hash.clone())
+            .fetch_all(&mut conn)
+            .await?;
             if rows.is_empty() {
                 sqlx::query(r#"INSERT INTO "files" ("path", "size", "hhash") VALUES (?, ?, ?)"#)
                     .bind(path.to_str().unwrap().to_string())
@@ -177,7 +199,10 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>) -> Result<u64> 
                     .bind(p_hash)
                     .execute(&mut conn)
                     .await?;
-                continue
+                continue;
+            }
+            if rows.clone().into_iter().all(|x| x.0.eq(path_str)) {
+                continue;
             }
             let hash = match get_file_sha256(&path, MAX_SIZE_LIMIT).await {
                 Some(hash) => hash,
@@ -186,11 +211,13 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>) -> Result<u64> 
             let mut dup = false;
             for row in rows {
                 if row.0.eq(path_str) {
-                    continue
+                    continue;
                 }
                 let l_hash = if row.3.is_some() {
                     row.3.clone().unwrap()
-                } else if let Some(hash) = get_file_sha256(&PathBuf::from_str(&row.0).unwrap() , MAX_SIZE_LIMIT).await {
+                } else if let Some(hash) =
+                    get_file_sha256(&PathBuf::from_str(&row.0).unwrap(), MAX_SIZE_LIMIT).await
+                {
                     sqlx::query(r#"UPDATE "files" SET "hash" = ? WHERE "path" = ?"#)
                         .bind(hash.clone())
                         .bind(row.0.clone())
@@ -201,7 +228,8 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>) -> Result<u64> 
                     continue;
                 };
                 dup = l_hash.eq(&hash);
-            };
+            }
+            let file_name = file_name.to_str().unwrap().to_string();
 
             if dup {
                 let target = path
@@ -271,8 +299,6 @@ fn revert_function() -> Result<()> {
 mod test {
     use super::*;
     use std::fs::OpenOptions;
-    use std::io::Write;
-    use std::path::Path;
 
     fn write_file(file_name: &str, bytes: usize) -> Result<()> {
         let s = std::iter::repeat("\0").take(bytes).collect::<String>();
@@ -283,7 +309,6 @@ mod test {
         file.write(s.as_bytes())?;
         Ok(())
     }
-
 
     fn main_test() -> Result<u64> {
         let test_dir = Path::new("test");
@@ -299,16 +324,22 @@ mod test {
         write_file("3.txt", 5)?;
         write_file("4.txt", 5)?;
         write_file("5.txt", 6)?;
-        fs::create_dir(Path::new("subdir"))?;
         write_file("114514.txt", 2048)?;
         write_file("9.txt", 2048)?;
-        write_file(Path::new("subdir").join("1919.txt").to_str().unwrap(), 2048 * 10)?;
-        write_file(Path::new("subdir").join("810.txt").to_str().unwrap(), 2048 * 10)?;
+        fs::create_dir(Path::new("subdir"))?;
+        write_file(
+            Path::new("subdir").join("1919.txt").to_str().unwrap(),
+            2048 * 10,
+        )?;
+        write_file(
+            Path::new("subdir").join("810.txt").to_str().unwrap(),
+            2048 * 10,
+        )?;
         let current_env = env::current_dir()?;
         let r = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?
-            .block_on(iter_files(current_env, Some("samehash.db")))?;
+            .block_on(iter_files(current_env, Some(DEFAULT_DATABASE_FILE)))?;
         Ok(r)
     }
 
@@ -323,7 +354,10 @@ mod test {
             .enable_all()
             .build()
             .unwrap()
-            .block_on(iter_files(env::current_dir().unwrap(), Some("samehash.db")))
+            .block_on(iter_files(
+                env::current_dir().unwrap(),
+                Some(DEFAULT_DATABASE_FILE),
+            ))
             .unwrap();
         assert_eq!(r, 0);
     }
@@ -347,14 +381,20 @@ async fn main() -> Result<()> {
     let cwd = env::current_dir().unwrap();
     create_dir("samehash", None);
     println!("Current path: {}", cwd.to_str().unwrap());
+    let start_time = std::time::Instant::now();
     iter_files(cwd, {
         if std::env::args().into_iter().any(|x| x.eq("--memory")) {
             None
         } else {
-            Some("samehash.db")
+            Some(DEFAULT_DATABASE_FILE)
         }
     })
     .await?;
 
-    Ok(pause())
+    println!(
+        "Time elapsed: {} milliseconds",
+        start_time.elapsed().as_millis()
+    );
+    pause();
+    Ok(())
 }
