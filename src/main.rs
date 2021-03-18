@@ -31,6 +31,7 @@ use tokio::io::{AsyncReadExt, BufReader};
 const BUFFER_SIZE: usize = 1024 * 16;
 const MAX_SIZE_LIMIT: usize = usize::MAX;
 const DEFAULT_DATABASE_FILE: &str = "samehash.db";
+const PEEK_SIZE: usize = BUFFER_SIZE * 8;
 
 // https://www.reddit.com/r/rust/comments/8tfyof/noob_question_pause/
 fn pause() {
@@ -114,7 +115,7 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>) -> Result<u64> 
             r#"CREATE TABLE "files" (
                 "path"	TEXT NOT NULL,
                 "size"	INTEGER NOT NULL,
-                "hhash"	TEXT NOT NULL,
+                "hhash"	TEXT,
                 "hash"	TEXT
             );"#,
         )
@@ -177,7 +178,7 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>) -> Result<u64> 
 
             let file_size = entry.metadata()?.len();
 
-/*          let rows = sqlx::query(r#"SELECT * FROM "files" WHERE "size" = ?"#)
+          let rows = sqlx::query_as::<_, (String, i64, Option<String>, Option<String>)>(r#"SELECT * FROM "files" WHERE "size" = ?"#)
                 .bind(file_size as i64)
                 .fetch_all(&mut conn)
                 .await?;
@@ -188,12 +189,37 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>) -> Result<u64> 
                     .execute(&mut conn)
                     .await?;
                 continue;
-            }*/
+            }
+            let mut dup = false;
 
-            let p_hash = match get_file_sha256(&path, 128 * 1024).await {
+            let p_hash = match get_file_sha256(&path, PEEK_SIZE).await {
                 Some(s) => s,
                 None => continue,
             };
+
+            for row in rows {
+                if row.0.eq(path_str) {
+                    continue;
+                }
+                let h_hash = if row.2.is_some() {
+                    row.2.clone().unwrap()
+                } else if let Some(hash) =
+                    get_file_sha256(&PathBuf::from_str(&row.0).unwrap(), PEEK_SIZE).await
+                {
+                    sqlx::query(r#"UPDATE "files" SET "hhash" = ? WHERE "path" = ?"#)
+                        .bind(hash.clone())
+                        .bind(row.0.clone())
+                        .execute(&mut conn)
+                        .await?;
+                    hash
+                } else {
+                    continue
+                };
+                dup = h_hash.eq(&p_hash);
+                if dup {
+                    break
+                }
+            }
 
             let rows = sqlx::query_as::<_, (String, i64, String, Option<String>)>(
                 r#"SELECT * FROM "files" WHERE "size" = ? AND "hhash" = ?"#,
@@ -211,14 +237,10 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>) -> Result<u64> 
                     .await?;
                 continue;
             }
-            if rows.clone().into_iter().all(|x| x.0.eq(path_str)) {
-                continue;
-            }
             let hash = match get_file_sha256(&path, MAX_SIZE_LIMIT).await {
                 Some(hash) => hash,
                 None => continue,
             };
-            let mut dup = false;
             for row in rows {
                 if row.0.eq(path_str) {
                     continue;
@@ -238,8 +260,11 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>) -> Result<u64> 
                     continue;
                 };
                 dup = l_hash.eq(&hash);
+                if dup {
+                    break
+                }
             }
-            let file_name = file_name.to_str().unwrap().to_string();
+            let file_name = file_name_str.to_string();
 
             if dup {
                 let target = path
