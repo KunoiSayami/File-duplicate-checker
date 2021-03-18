@@ -17,6 +17,8 @@
  ** You should have received a copy of the GNU Affero General Public License
  ** along with this program. If not, see <https://www.gnu.org/licenses/>.
  */
+mod database;
+
 use anyhow::Result;
 use sha2::digest::DynDigest;
 use sha2::{Digest, Sha256};
@@ -106,7 +108,7 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>) -> Result<u64> 
         }
     }
     let mut conn = SqliteConnection::connect(path_db.unwrap_or("sqlite::memory:")).await?;
-    if sqlx::query(r#"SELECT name FROM sqlite_master WHERE type='table' AND "name"='files' "#)
+    if sqlx::query(r#"SELECT name FROM sqlite_master WHERE type='table' AND "name"='files'"#)
         .fetch_all(&mut conn)
         .await?
         .is_empty()
