@@ -108,7 +108,7 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>) -> Result<u64> 
         }
     }
     let mut conn = SqliteConnection::connect(path_db.unwrap_or("sqlite::memory:")).await?;
-    if sqlx::query(r#"SELECT name FROM sqlite_master WHERE type='table' AND "name"='files'"#)
+    let mut conn = if sqlx::query(r#"SELECT name FROM sqlite_master WHERE type='table' AND "name"='files'"#)
         .fetch_all(&mut conn)
         .await?
         .is_empty()
@@ -118,7 +118,14 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>) -> Result<u64> 
         )
         .execute(&mut conn)
         .await?;
-    }
+        conn
+    } else {
+        let (conn, eq_major) = database::check_version_eq_major(conn).await?;
+        if !eq_major {
+            panic!("Except database version {}, but current database version not equal", database::MAJOR_DATABASE_VERSION);
+        }
+        conn
+    };
     let current_dir_len = current_dir.to_str().unwrap().len();
 
     let (directories, approximately_file_num) = iter_directory(&current_dir)?;

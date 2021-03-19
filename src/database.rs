@@ -61,13 +61,11 @@ pub mod v2 {
 
     pub const VERSION: &str = "2";
 
-    pub async fn upgrade_from_v0(mut conn: SqliteConnection) -> Result<SqliteConnection> {
+    pub async fn upgrade_from_v0(conn: SqliteConnection) -> Result<SqliteConnection> {
 
-        let v = query_as::<_, (String,)>(r#"SELECT "value" FROM "fdc_meta" WHERE "key" = 'version'"#)
-            .fetch_all(&mut conn)
-            .await?;
+        let (mut conn, version) = check_database_version(conn).await?;
 
-        if ! v.is_empty() && v.index(0).0.as_str().ge(VERSION) {
+        if version.as_str().ge(VERSION) {
             //TODO: return Error here
             return Ok(conn)
         }
@@ -99,4 +97,25 @@ pub mod v2 {
 
         Ok(conn)
     }
+
+    pub async fn check_database_version(mut conn: SqliteConnection) -> Result<(SqliteConnection, String)> {
+        let v = query_as::<_, (String,)>(r#"SELECT "value" FROM "fdc_meta" WHERE "key" = 'version'"#)
+            .fetch_all(&mut conn)
+            .await?;
+        if v.is_empty() {
+            return Ok((conn, "1".to_string()))
+        }
+        Ok((conn, v.index(0).0.clone()))
+    }
+
+}
+
+pub const MAJOR_DATABASE_VERSION: &str = v2::VERSION;
+pub use v2::check_database_version;
+use sqlx::SqliteConnection;
+
+
+pub async fn check_version_eq_major(conn: SqliteConnection) -> anyhow::Result<(SqliteConnection, bool)> {
+    let (conn, version) = check_database_version(conn).await?;
+    Ok((conn, version.as_str().eq(MAJOR_DATABASE_VERSION)))
 }
