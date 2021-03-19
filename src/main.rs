@@ -114,12 +114,7 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>) -> Result<u64> 
         .is_empty()
     {
         sqlx::query(
-            r#"CREATE TABLE "files" (
-                "path"	TEXT NOT NULL,
-                "size"	INTEGER NOT NULL,
-                "hhash"	TEXT,
-                "hash"	TEXT
-            );"#,
+            database::v2::CREATE_TABLE
         )
         .execute(&mut conn)
         .await?;
@@ -413,6 +408,11 @@ mod test {
 async fn main() -> Result<()> {
     if std::env::args().into_iter().any(|x| x.eq("--revert")) {
         return revert_function();
+    }
+
+    if std::env::args().into_iter().any(|x| x.eq("--upgrade-v2")) {
+        let conn = SqliteConnection::connect(DEFAULT_DATABASE_FILE).await?;
+        database::v2::upgrade_from_v0(conn).await?;
     }
 
     let cwd = env::current_dir().unwrap();

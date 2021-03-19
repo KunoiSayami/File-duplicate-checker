@@ -20,12 +20,25 @@
 #![allow(dead_code)]
 const SELECT_STATEMENT: &str = r#"SELECT "value" FROM "fdc_meta" WHERE "key" = 'version'"#;
 
-mod v2 {
+/*pub mod error {
+    use sqlx::SqliteConnection;
+
+    #[derive(Debug)]
+    struct VersionCheckError {
+        conn: SqliteConnection
+    }
+
+    impl std::error::Error for VersionCheckError {}
+
+}*/
+
+pub mod v2 {
 
     use sqlx::{query_as, SqliteConnection, query};
     use anyhow::Result;
+    use std::ops::Index;
 
-    const CREATE_TABLE: &str =
+    pub const CREATE_TABLE: &str =
         r#"CREATE TABLE "files" (
             "path"	TEXT NOT NULL,
             "size"	INTEGER NOT NULL,
@@ -37,13 +50,27 @@ mod v2 {
             "key"	TEXT NOT NULL,
             "value"	TEXT NOT NULL,
             PRIMARY KEY("key")
-        );"#;
-    const INIT_TABLE: &str =
+        );
+
+        INSERT INTO "fdc_meta" VALUES ("version", "2");
+        "#;
+
+    #[deprecated(since="4.0.0", note="CREATE_TABLE include this statement")]
+    pub const INIT_TABLE: &str =
         r#"INSERT INTO "fdc_meta" VALUES ("version", "2")"#;
 
-    const VERSION: &str = "2";
+    pub const VERSION: &str = "2";
 
-    async fn upgrade_from_v0(mut conn: SqliteConnection) -> Result<SqliteConnection> {
+    pub async fn upgrade_from_v0(mut conn: SqliteConnection) -> Result<SqliteConnection> {
+
+        let v = query_as::<_, (String,)>(r#"SELECT "value" FROM "fdc_meta" WHERE "key" = 'version'"#)
+            .fetch_all(&mut conn)
+            .await?;
+
+        if ! v.is_empty() && v.index(0).0.as_str().ge(VERSION) {
+            //TODO: return Error here
+            return Ok(conn)
+        }
 
         query(r#"ALTER TABLE "files" RENAME TO "old_files"#)
             .execute(&mut conn)
