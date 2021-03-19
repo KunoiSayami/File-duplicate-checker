@@ -70,7 +70,7 @@ pub mod v2 {
             return Ok(conn)
         }
 
-        query(r#"ALTER TABLE "files" RENAME TO "old_files"#)
+        query(r#"ALTER TABLE "files" RENAME TO "old_files""#)
             .execute(&mut conn)
             .await?;
 
@@ -99,13 +99,15 @@ pub mod v2 {
     }
 
     pub async fn check_database_version(mut conn: SqliteConnection) -> Result<(SqliteConnection, String)> {
-        let v = query_as::<_, (String,)>(r#"SELECT "value" FROM "fdc_meta" WHERE "key" = 'version'"#)
+        if let Ok(v) = query_as::<_, (String,)>(r#"SELECT "value" FROM "fdc_meta" WHERE "key" = 'version'"#)
             .fetch_all(&mut conn)
-            .await?;
-        if v.is_empty() {
-            return Ok((conn, "1".to_string()))
+            .await
+        {
+            assert!(v.is_empty());
+            Ok((conn, v.index(0).0.clone()))
+        } else {
+            Ok((conn, "1".to_string()))
         }
-        Ok((conn, v.index(0).0.clone()))
     }
 
 }
