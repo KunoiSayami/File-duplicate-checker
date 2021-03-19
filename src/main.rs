@@ -120,9 +120,9 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>) -> Result<u64> 
         .await?;
         conn
     } else {
-        let (conn, eq_major) = database::check_version_eq_major(conn).await?;
-        if !eq_major {
-            panic!("Except database version {}, but current database version not equal", database::MAJOR_DATABASE_VERSION);
+        let (conn, result) = database::check_version_eq_major(conn).await?;
+        if let database::VersionResult::MISMATCH(version) = result {
+            panic!("Except database version {}, but {} found", database::MAJOR_DATABASE_VERSION, version);
         }
         conn
     };

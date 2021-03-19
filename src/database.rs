@@ -116,8 +116,28 @@ pub const MAJOR_DATABASE_VERSION: &str = v2::VERSION;
 pub use v2::check_database_version;
 use sqlx::SqliteConnection;
 
+pub enum VersionResult {
+    EQUAL,
+    MISMATCH(String)
+}
 
-pub async fn check_version_eq_major(conn: SqliteConnection) -> anyhow::Result<(SqliteConnection, bool)> {
+impl VersionResult {
+    pub fn new(version: &str) -> VersionResult {
+        if version.eq(MAJOR_DATABASE_VERSION) {
+            VersionResult::EQUAL
+        } else {
+            VersionResult::MISMATCH(version.to_string())
+        }
+    }
+}
+
+impl From<&str> for VersionResult {
+    fn from(version: &str) -> Self {
+        VersionResult::new(version)
+    }
+}
+
+pub async fn check_version_eq_major(conn: SqliteConnection) -> anyhow::Result<(SqliteConnection, VersionResult)> {
     let (conn, version) = check_database_version(conn).await?;
-    Ok((conn, version.as_str().eq(MAJOR_DATABASE_VERSION)))
+    Ok((conn, VersionResult::new(&version)))
 }
