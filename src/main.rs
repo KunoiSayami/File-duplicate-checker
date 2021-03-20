@@ -35,6 +35,7 @@ const MAX_SIZE_LIMIT: usize = usize::MAX;
 const DEFAULT_DATABASE_FILE: &str = "samehash.db";
 const DEFAULT_FOLDER: &str = "samehash";
 const PEEK_SIZE: usize = BUFFER_SIZE * 8;
+const PROGRAM_VERSION: &'static str = env!("CARGO_PKG_VERSION");
 
 // https://www.reddit.com/r/rust/comments/8tfyof/noob_question_pause/
 fn pause() {
@@ -107,7 +108,7 @@ fn iter_directory(dir: &Path) -> Result<(Vec<PathBuf>, u32)> {
     Ok((dirs, files))
 }
 
-async fn iter_files(current_dir: PathBuf, path_db: Option<&str>) -> Result<u64> {
+async fn iter_files(current_dir: PathBuf, path_db: Option<&str>, apply_move: bool) -> Result<u64> {
     let mut num = 0u64;
     if path_db.is_some() {
         let file = std::path::Path::new(path_db.clone().unwrap());
@@ -134,6 +135,7 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>) -> Result<u64> 
         }
         conn
     };
+    println!("Current path: {}", current_dir.to_str().unwrap());
     let current_dir_len = current_dir.to_str().unwrap().len();
 
     let (directories, approximately_file_num) = iter_directory(&current_dir)?;
@@ -141,7 +143,13 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>) -> Result<u64> 
     let mut last_filename_length = 0;
     println!();
     for dir in directories {
-        for entry in fs::read_dir(dir)? {
+        let read_dir = fs::read_dir(&dir);
+        if read_dir.is_err() {
+            let err = read_dir.unwrap_err();
+            eprintln!("\nRead directory error: {:?} ({:?})", &dir, err);
+            continue
+        }
+        for entry in read_dir? {
             let entry = entry?;
             let path = entry.path();
             let path_str = path.to_str().unwrap();
@@ -160,11 +168,10 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>) -> Result<u64> 
                 .into_iter()
                 .any(|x| path_str.ends_with(x))
             {
-                //println!("Skipped: {:?}", file_name);
                 continue;
             }
             print!(
-                "\r({}/{}), name: {}",
+                "\r({}/{}): {}",
                 current_progress,
                 approximately_file_num,
                 file_name_str
@@ -301,7 +308,7 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>) -> Result<u64> 
             }
             let file_name = file_name_str.to_string();
 
-            if dup {
+            if dup && apply_move {
                 let target = path
                     .clone()
                     .to_str()
@@ -331,7 +338,7 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>) -> Result<u64> 
             }
         }
     }
-    println!();
+    println!("{:>80}", "");
     Ok(num)
 }
 
@@ -409,7 +416,7 @@ mod test {
         let r = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?
-            .block_on(iter_files(current_env, Some(DEFAULT_DATABASE_FILE)))?;
+            .block_on(iter_files(current_env, Some(DEFAULT_DATABASE_FILE), true))?;
         Ok(r)
     }
 
@@ -427,6 +434,7 @@ mod test {
             .block_on(iter_files(
                 env::current_dir().unwrap(),
                 Some(DEFAULT_DATABASE_FILE),
+                true,
             ))
             .unwrap();
         assert_eq!(r, 0);
@@ -444,6 +452,7 @@ mod test {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    println!("Version: {}, Database version: {}", PROGRAM_VERSION, database::MAJOR_DATABASE_VERSION);
     if std::env::args().into_iter().any(|x| x.eq("--revert")) {
         return revert_function();
     }
@@ -451,11 +460,13 @@ async fn main() -> Result<()> {
     if std::env::args().into_iter().any(|x| x.eq("--upgrade-v2")) {
         let conn = SqliteConnection::connect(DEFAULT_DATABASE_FILE).await?;
         database::v2::upgrade_from_v0(conn).await?;
+        return Ok(())
     }
+
+    let apply_move = std::env::args().into_iter().any(|x| x.eq("--dry"));
 
     let cwd = env::current_dir().unwrap();
     create_dir(DEFAULT_FOLDER, None);
-    println!("Current path: {}", cwd.to_str().unwrap());
     let start_time = std::time::Instant::now();
     iter_files(cwd, {
         if std::env::args().into_iter().any(|x| x.eq("--memory")) {
@@ -463,7 +474,7 @@ async fn main() -> Result<()> {
         } else {
             Some(DEFAULT_DATABASE_FILE)
         }
-    })
+    }, apply_move)
     .await?;
 
     let elapsed = start_time.elapsed();
