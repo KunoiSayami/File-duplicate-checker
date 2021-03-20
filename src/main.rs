@@ -33,6 +33,7 @@ use tokio::io::{AsyncReadExt, BufReader};
 const BUFFER_SIZE: usize = 1024 * 16;
 const MAX_SIZE_LIMIT: usize = usize::MAX;
 const DEFAULT_DATABASE_FILE: &str = "samehash.db";
+const DEFAULT_FOLDER: &str = "samehash";
 const PEEK_SIZE: usize = BUFFER_SIZE * 8;
 
 // https://www.reddit.com/r/rust/comments/8tfyof/noob_question_pause/
@@ -43,12 +44,12 @@ fn pause() {
     std::io::Read::read(&mut stdin(), &mut [0]).unwrap();
 }
 
-async fn get_file_sha256(s: &Path, read_size: usize) -> Option<String> {
-    let file = match File::open(&s).await {
+async fn get_file_sha256sum(path: &Path, read_size: usize) -> Result<String> {
+    let file = match File::open(&path).await {
         Ok(file) => file,
         Err(error) => {
-            eprintln!("Open {} error {:?}", String::from(s.to_str()?), error);
-            return None;
+            eprintln!("Open {:?} error {:?}", path, error);
+            return Err(anyhow::Error::new(error));
         }
     };
     let mut file = BufReader::new(file);
@@ -56,7 +57,7 @@ async fn get_file_sha256(s: &Path, read_size: usize) -> Option<String> {
     let mut buffer = [0; BUFFER_SIZE];
     let mut rsize = 0usize;
     loop {
-        let size = file.read(&mut buffer).await.ok()?;
+        let size = file.read(&mut buffer).await.ok().unwrap();
         DynDigest::update(&mut sha256, &buffer[0..size]);
         rsize += size;
         if size < BUFFER_SIZE || rsize > read_size {
@@ -64,37 +65,44 @@ async fn get_file_sha256(s: &Path, read_size: usize) -> Option<String> {
         }
     }
     let result = sha256.finalize();
-    Option::from(format!("{:x}", result))
+    Ok(format!("{:x}", result))
 }
 
 fn iter_directory(dir: &Path) -> Result<(Vec<PathBuf>, u32)> {
     let mut files = 0u32;
     let mut dirs = vec![dir.to_path_buf()];
-    let current_idr = dir;
+    let current_dir = dir;
     let mut skipped: Vec<String> = Default::default();
-    for entry in fs::read_dir(current_idr)? {
-        let entry = entry?;
-        let path = entry.path();
-        let path_str = path.to_str().unwrap();
-        if path.is_dir() {
-            if vec![".git", "target", "samehash"]
-                .into_iter()
-                .any(|x| path_str.ends_with(x))
-            {
-                skipped.push(path.to_str().unwrap_or("").to_string());
-                continue;
+    match fs::read_dir(current_dir) {
+        Ok(read_dir) => {
+            for entry in read_dir {
+                let entry = entry?;
+                let path = entry.path();
+                let path_str = path.to_str().unwrap();
+                if path.is_dir() {
+                    if vec![".git", "target", DEFAULT_FOLDER]
+                        .into_iter()
+                        .any(|x| path_str.ends_with(x))
+                    {
+                        skipped.push(path.to_str().unwrap_or("").to_string());
+                        continue;
+                    }
+                    //dirs.push(path.clone());
+                    let r = iter_directory(&path)?;
+                    dirs.extend(r.0);
+                    files += r.1;
+                } else {
+                    files += 1;
+                }
             }
-            //dirs.push(path.clone());
-            let r = iter_directory(&path)?;
-            dirs.extend(r.0);
-            files += r.1;
-        } else {
-            files += 1;
+            println!("in {}: ({})", dir.to_str().unwrap_or(""), files);
+            for x in skipped {
+                println!("Skipped path: {}", x);
+            }
+        },
+        Err(e) => {
+            eprintln!("Got error in {:?}, {:?}", current_dir, e)
         }
-    }
-    println!("in {}: ({})", dir.to_str().unwrap_or(""), files);
-    for x in skipped {
-        println!("Skipped path: {}", x);
     }
     Ok((dirs, files))
 }
@@ -121,7 +129,7 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>) -> Result<u64> 
         conn
     } else {
         let (conn, result) = database::check_version_eq_major(conn).await?;
-        if let database::VersionResult::MISMATCH(version) = result {
+        if let database::VersionResult::Mismatch(version) = result {
             panic!("Except database version {}, but {} found", database::MAJOR_DATABASE_VERSION, version);
         }
         conn
@@ -168,8 +176,8 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>) -> Result<u64> 
                 print!("{}", s.into_iter().collect::<String>())
             }
             last_filename_length = c;
-
             std::io::stdout().flush()?;
+
             if let Ok(rows) = sqlx::query(r#"SELECT 1 FROM "files" WHERE "path" = ?"#)
                 .bind(path.to_str().unwrap().to_string())
                 .fetch_all(&mut conn)
@@ -180,9 +188,15 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>) -> Result<u64> 
                 }
             }
 
-            let file_size = entry.metadata()?.len();
+            let file_size = match entry.metadata() {
+                Ok(metadata) => metadata.len(),
+                Err(e) => {
+                    eprintln!("Error in fetch {:?} metadata ({:?})", &path, e);
+                    continue
+                }
+            };
 
-          let rows = sqlx::query_as::<_, (String, i64, Option<String>, Option<String>)>(r#"SELECT * FROM "files" WHERE "size" = ?"#)
+            let rows = sqlx::query_as::<_, (String, i64, Option<String>, Option<String>)>(r#"SELECT * FROM "files" WHERE "size" = ?"#)
                 .bind(file_size as i64)
                 .fetch_all(&mut conn)
                 .await?;
@@ -196,9 +210,12 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>) -> Result<u64> 
             }
             let mut dup = false;
 
-            let p_hash = match get_file_sha256(&path, PEEK_SIZE).await {
-                Some(s) => s,
-                None => continue,
+            let p_hash = match get_file_sha256sum(&path, PEEK_SIZE).await {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("Got file sha256sum error: {:?}, {:?}", &path, e);
+                    continue
+                },
             };
 
             for row in rows {
@@ -207,17 +224,21 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>) -> Result<u64> 
                 }
                 let h_hash = if row.2.is_some() {
                     row.2.clone().unwrap()
-                } else if let Some(hash) =
-                    get_file_sha256(&PathBuf::from_str(&row.0).unwrap(), PEEK_SIZE).await
-                {
-                    sqlx::query(r#"UPDATE "files" SET "hhash" = ? WHERE "path" = ?"#)
-                        .bind(hash.clone())
-                        .bind(row.0.clone())
-                        .execute(&mut conn)
-                        .await?;
-                    hash
-                } else {
-                    continue
+                } else  {
+                    match get_file_sha256sum(&PathBuf::from_str(&row.0).unwrap(), PEEK_SIZE).await {
+                        Ok(hash) => {
+                            sqlx::query(r#"UPDATE "files" SET "hhash" = ? WHERE "path" = ?"#)
+                                .bind(hash.clone())
+                                .bind(row.0.clone())
+                                .execute(&mut conn)
+                                .await?;
+                            hash
+                        },
+                        Err(e) => {
+                            eprintln!("[History] Got file sha256sum error: {}, {:?}", &row.0, e);
+                            continue
+                        }
+                    }
                 };
                 dup = h_hash.eq(&p_hash);
                 if dup {
@@ -241,27 +262,37 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>) -> Result<u64> 
                     .await?;
                 continue;
             }
-            let hash = match get_file_sha256(&path, MAX_SIZE_LIMIT).await {
-                Some(hash) => hash,
-                None => continue,
+
+            let hash = match get_file_sha256sum(&path, MAX_SIZE_LIMIT).await {
+                Ok(hash) => hash,
+                Err(e) => {
+                    eprintln!("Got full file sha256sum error: {:?}, {:?}", &path, e);
+                    continue
+                },
             };
+
             for row in rows {
                 if row.0.eq(path_str) {
                     continue;
                 }
                 let l_hash = if row.3.is_some() {
                     row.3.clone().unwrap()
-                } else if let Some(hash) =
-                    get_file_sha256(&PathBuf::from_str(&row.0).unwrap(), MAX_SIZE_LIMIT).await
-                {
-                    sqlx::query(r#"UPDATE "files" SET "hash" = ? WHERE "path" = ?"#)
-                        .bind(hash.clone())
-                        .bind(row.0.clone())
-                        .execute(&mut conn)
-                        .await?;
-                    hash
                 } else {
-                    continue;
+                    match get_file_sha256sum(&PathBuf::from_str(&row.0).unwrap(), MAX_SIZE_LIMIT).await
+                    {
+                        Ok(hash) => {
+                            sqlx::query(r#"UPDATE "files" SET "hash" = ? WHERE "path" = ?"#)
+                                .bind(hash.clone())
+                                .bind(row.0.clone())
+                                .execute(&mut conn)
+                                .await?;
+                            hash
+                        },
+                        Err(e) => {
+                            eprintln!("[History] Got file sha256sum error: {}, {:?}", &row.0, e);
+                            continue
+                        },
+                    }
                 };
                 dup = l_hash.eq(&hash);
                 if dup {
@@ -279,14 +310,14 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>) -> Result<u64> 
                     .split_at(current_dir_len + 1)
                     .1
                     .replace(if cfg!(windows) { '\\' } else { '/' }, "[0x44]");
-                let prefix = PathBuf::from("samehash");
+                let prefix = PathBuf::from(DEFAULT_FOLDER);
                 let rename_target = prefix.join(hash.clone()).join(target.clone());
                 println!(
                     "\rFind duplicate file: {}, move to: {:?}",
                     file_name,
                     rename_target.clone()
                 );
-                create_dir(hash.clone().as_str(), Option::from("samehash"));
+                create_dir(hash.clone().as_str(), Option::from(DEFAULT_FOLDER));
                 fs::rename(path, rename_target).unwrap();
                 num += 1;
             } else {
@@ -316,7 +347,7 @@ fn create_dir(p: &str, d: Option<&str>) {
 }
 
 fn revert_function() -> Result<()> {
-    for entry in fs::read_dir("samehash")? {
+    for entry in fs::read_dir(DEFAULT_FOLDER)? {
         let path = entry?.path();
         for item in fs::read_dir(path)? {
             let item = item?;
@@ -357,7 +388,7 @@ mod test {
 
         fs::create_dir(test_dir)?;
         std::env::set_current_dir(test_dir)?;
-        fs::create_dir(Path::new("samehash"))?;
+        fs::create_dir(Path::new(DEFAULT_FOLDER))?;
         write_file("1.txt", 5)?;
         write_file("2.txt", 5)?;
         write_file("3.txt", 5)?;
@@ -423,7 +454,7 @@ async fn main() -> Result<()> {
     }
 
     let cwd = env::current_dir().unwrap();
-    create_dir("samehash", None);
+    create_dir(DEFAULT_FOLDER, None);
     println!("Current path: {}", cwd.to_str().unwrap());
     let start_time = std::time::Instant::now();
     iter_files(cwd, {

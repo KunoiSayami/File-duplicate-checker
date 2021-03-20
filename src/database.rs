@@ -103,7 +103,7 @@ pub mod v2 {
             .fetch_all(&mut conn)
             .await
         {
-            assert!(v.is_empty());
+            assert!(!v.is_empty());
             Ok((conn, v.index(0).0.clone()))
         } else {
             Ok((conn, "1".to_string()))
@@ -116,17 +116,18 @@ pub const MAJOR_DATABASE_VERSION: &str = v2::VERSION;
 pub use v2::check_database_version;
 use sqlx::SqliteConnection;
 
+#[derive(Debug)]
 pub enum VersionResult {
-    EQUAL,
-    MISMATCH(String)
+    Equal,
+    Mismatch(String)
 }
 
 impl VersionResult {
-    pub fn new(version: &str) -> VersionResult {
+    pub fn new(version: &str) -> Self {
         if version.eq(MAJOR_DATABASE_VERSION) {
-            VersionResult::EQUAL
+            VersionResult::Equal
         } else {
-            VersionResult::MISMATCH(version.to_string())
+            VersionResult::Mismatch(version.to_string())
         }
     }
 }
@@ -137,7 +138,13 @@ impl From<&str> for VersionResult {
     }
 }
 
+impl From<&String> for VersionResult {
+    fn from(version: &String) -> Self {
+        Self::from(version.as_str())
+    }
+}
+
 pub async fn check_version_eq_major(conn: SqliteConnection) -> anyhow::Result<(SqliteConnection, VersionResult)> {
     let (conn, version) = check_database_version(conn).await?;
-    Ok((conn, VersionResult::new(&version)))
+    Ok((conn, VersionResult::from(&version)))
 }
