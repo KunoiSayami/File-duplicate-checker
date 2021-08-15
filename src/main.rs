@@ -31,7 +31,7 @@ use tokio::fs::File;
 use tokio::io::{AsyncReadExt, BufReader};
 
 const BUFFER_SIZE: usize = 1024 * 16;
-const MAX_SIZE_LIMIT: usize = usize::MAX;
+const DEFAULT_MAX_SIZE_LIMIT: usize = usize::MAX;
 const DEFAULT_DATABASE_FILE: &str = "samehash.db";
 const DEFAULT_FOLDER: &str = "samehash";
 const PEEK_SIZE: usize = BUFFER_SIZE * 8;
@@ -109,6 +109,14 @@ fn iter_directory(dir: &Path) -> Result<(Vec<PathBuf>, u32)> {
 }
 
 async fn iter_files(current_dir: PathBuf, path_db: Option<&str>, apply_move: bool) -> Result<u64> {
+    if !apply_move {
+        eprintln!("WARNING: dry run is specified")
+    }
+    const MAX_SIZE_LIMIT: usize =
+        option_env!("MAX_SIZE_LIMIT").unwrap_or("").parse::<usize>().unwrap_or(DEFAULT_MAX_SIZE_LIMIT);
+    if MAX_SIZE_LIMIT != DEFAULT_MAX_SIZE_LIMIT {
+        println!("MAX_SIZE_LIMIT specified in environment variable: {}", MAX_SIZE_LIMIT)
+    }
     let mut num = 0u64;
     if path_db.is_some() {
         let file = std::path::Path::new(path_db.clone().unwrap());
@@ -162,6 +170,11 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>, apply_move: boo
                 .ok_or("No filename")
                 .expect("Get filename fail");
             let file_name_str = file_name.to_str().unwrap_or("");
+            let file_name_str = if file_name_str.len() > 20 {
+                file_name_str.split_at(20).0
+            } else {
+                file_name_str
+            };
 
             current_progress += 1;
             if vec![".py", ".db", ".json", ".exe", ".o", "db-wal", "db-shm"]
@@ -466,7 +479,7 @@ async fn main() -> Result<()> {
         return Ok(())
     }
 
-    let apply_move = std::env::args().into_iter().any(|x| x.eq("--dry"));
+    let apply_move = ! std::env::args().into_iter().any(|x| x.eq("--dry"));
 
     let cwd = env::current_dir().unwrap();
     create_dir(DEFAULT_FOLDER, None);
