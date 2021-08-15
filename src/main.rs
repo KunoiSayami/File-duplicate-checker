@@ -178,11 +178,11 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>, apply_move: boo
                 .ok_or("No filename")
                 .expect("Get filename fail");
             let file_name_str = file_name.to_str().unwrap_or("");
-            let file_name_str = if file_name_str.len() > 20 {
+            /*let file_name_str = if file_name_str.len() > 20 {
                 file_name_str.split_at(20).0
             } else {
                 file_name_str
-            };
+            };*/
 
             current_progress += 1;
             if vec![".py", ".db", ".json", ".exe", ".o", "db-wal", "db-shm"]
