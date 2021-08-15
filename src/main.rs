@@ -112,14 +112,14 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>, apply_move: boo
     if !apply_move {
         eprintln!("WARNING: dry run is specified")
     }
-    const MAX_SIZE_LIMIT: usize = option_env!("MAX_SIZE_LIMIT")
+    let max_size_limit: usize = option_env!("max_size_limit")
         .unwrap_or("")
         .parse::<usize>()
         .unwrap_or(DEFAULT_MAX_SIZE_LIMIT);
-    if MAX_SIZE_LIMIT != DEFAULT_MAX_SIZE_LIMIT {
+    if max_size_limit != DEFAULT_MAX_SIZE_LIMIT {
         println!(
-            "MAX_SIZE_LIMIT specified in environment variable: {}",
-            MAX_SIZE_LIMIT
+            "max_size_limit specified in environment variable: {}",
+            max_size_limit
         )
     }
     let mut num = 0u64;
@@ -294,7 +294,7 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>, apply_move: boo
             }
 
             // FULL SIZE CHECK
-            let hash = match get_file_sha256sum(&path, MAX_SIZE_LIMIT).await {
+            let hash = match get_file_sha256sum(&path, max_size_limit).await {
                 Ok(hash) => hash,
                 Err(e) => {
                     eprintln!("Got full file sha256sum error: {:?}, {:?}", &path, e);
@@ -309,7 +309,7 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>, apply_move: boo
                 let l_hash = if row.3.is_some() {
                     row.3.clone().unwrap()
                 } else {
-                    match get_file_sha256sum(&PathBuf::from_str(&row.0).unwrap(), MAX_SIZE_LIMIT)
+                    match get_file_sha256sum(&PathBuf::from_str(&row.0).unwrap(), max_size_limit)
                         .await
                     {
                         Ok(hash) => {
