@@ -50,7 +50,7 @@ async fn get_file_sha256sum(path: &Path, read_size: usize) -> Result<String> {
         Ok(file) => file,
         Err(error) => {
             eprintln!("Open {:?} error {:?}", path, error);
-            return Err(anyhow::Error::new(error));
+            return Err(anyhow::Error::from(error));
         }
     };
     let mut file = BufReader::new(file);
@@ -195,6 +195,7 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>, apply_move: boo
                 }
             }
 
+            // META data check
             let file_size = match entry.metadata() {
                 Ok(metadata) => metadata.len(),
                 Err(e) => {
@@ -217,6 +218,7 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>, apply_move: boo
             }
             let mut dup = false;
 
+            // PEEK sha256 check
             let p_hash = match get_file_sha256sum(&path, PEEK_SIZE).await {
                 Ok(s) => s,
                 Err(e) => {
@@ -270,6 +272,7 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>, apply_move: boo
                 continue;
             }
 
+            // FULL SIZE CHECK
             let hash = match get_file_sha256sum(&path, MAX_SIZE_LIMIT).await {
                 Ok(hash) => hash,
                 Err(e) => {
@@ -401,7 +404,7 @@ mod test {
         write_file("3.txt", 5)?;
         write_file("4.txt", 5)?;
         write_file("5.txt", 6)?;
-        write_file("114514.txt", 2048)?;
+        write_file("6.txt", 2048)?;
         write_file("9.txt", 2048)?;
         fs::create_dir(Path::new("subdir"))?;
         write_file(
