@@ -100,7 +100,7 @@ fn iter_directory(dir: &Path) -> Result<(Vec<PathBuf>, u32)> {
             for x in skipped {
                 println!("Skipped path: {}", x);
             }
-        },
+        }
         Err(e) => {
             eprintln!("Got error in {:?}, {:?}", current_dir, e)
         }
@@ -112,10 +112,15 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>, apply_move: boo
     if !apply_move {
         eprintln!("WARNING: dry run is specified")
     }
-    const MAX_SIZE_LIMIT: usize =
-        option_env!("MAX_SIZE_LIMIT").unwrap_or("").parse::<usize>().unwrap_or(DEFAULT_MAX_SIZE_LIMIT);
+    const MAX_SIZE_LIMIT: usize = option_env!("MAX_SIZE_LIMIT")
+        .unwrap_or("")
+        .parse::<usize>()
+        .unwrap_or(DEFAULT_MAX_SIZE_LIMIT);
     if MAX_SIZE_LIMIT != DEFAULT_MAX_SIZE_LIMIT {
-        println!("MAX_SIZE_LIMIT specified in environment variable: {}", MAX_SIZE_LIMIT)
+        println!(
+            "MAX_SIZE_LIMIT specified in environment variable: {}",
+            MAX_SIZE_LIMIT
+        )
     }
     let mut num = 0u64;
     if path_db.is_some() {
@@ -125,24 +130,27 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>, apply_move: boo
         }
     }
     let mut conn = SqliteConnection::connect(path_db.unwrap_or("sqlite::memory:")).await?;
-    let mut conn = if sqlx::query(r#"SELECT name FROM sqlite_master WHERE type='table' AND "name"='files'"#)
-        .fetch_all(&mut conn)
-        .await?
-        .is_empty()
-    {
-        sqlx::query(
-            database::v2::CREATE_TABLE
-        )
-        .execute(&mut conn)
-        .await?;
-        conn
-    } else {
-        let (conn, result) = database::check_version_eq_major(conn).await?;
-        if let database::VersionResult::Mismatch(version) = result {
-            panic!("Except database version {}, but {} found", database::MAJOR_DATABASE_VERSION, version);
-        }
-        conn
-    };
+    let mut conn =
+        if sqlx::query(r#"SELECT name FROM sqlite_master WHERE type='table' AND "name"='files'"#)
+            .fetch_all(&mut conn)
+            .await?
+            .is_empty()
+        {
+            sqlx::query(database::v2::CREATE_TABLE)
+                .execute(&mut conn)
+                .await?;
+            conn
+        } else {
+            let (conn, result) = database::check_version_eq_major(conn).await?;
+            if let database::VersionResult::Mismatch(version) = result {
+                panic!(
+                    "Except database version {}, but {} found",
+                    database::MAJOR_DATABASE_VERSION,
+                    version
+                );
+            }
+            conn
+        };
     println!("Current path: {}", current_dir.to_str().unwrap());
     let current_dir_len = current_dir.to_str().unwrap().len();
 
@@ -155,7 +163,7 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>, apply_move: boo
         if read_dir.is_err() {
             let err = read_dir.unwrap_err();
             eprintln!("\nRead directory error: {:?} ({:?})", &dir, err);
-            continue
+            continue;
         }
         for entry in read_dir? {
             let entry = entry?;
@@ -185,9 +193,7 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>, apply_move: boo
             }
             print!(
                 "\r({}/{}): {}",
-                current_progress,
-                approximately_file_num,
-                file_name_str
+                current_progress, approximately_file_num, file_name_str
             );
             let c = file_name_str.len();
             if last_filename_length > c {
@@ -213,14 +219,16 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>, apply_move: boo
                 Ok(metadata) => metadata.len(),
                 Err(e) => {
                     eprintln!("Error in fetch {:?} metadata ({:?})", &path, e);
-                    continue
+                    continue;
                 }
             };
 
-            let rows = sqlx::query_as::<_, (String, i64, Option<String>, Option<String>)>(r#"SELECT * FROM "files" WHERE "size" = ?"#)
-                .bind(file_size as i64)
-                .fetch_all(&mut conn)
-                .await?;
+            let rows = sqlx::query_as::<_, (String, i64, Option<String>, Option<String>)>(
+                r#"SELECT * FROM "files" WHERE "size" = ?"#,
+            )
+            .bind(file_size as i64)
+            .fetch_all(&mut conn)
+            .await?;
             if rows.is_empty() {
                 sqlx::query(r#"INSERT INTO "files" ("path", "size") VALUES (?, ?)"#)
                     .bind(path.to_str().unwrap().to_string())
@@ -236,8 +244,8 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>, apply_move: boo
                 Ok(s) => s,
                 Err(e) => {
                     eprintln!("Got file sha256sum error: {:?}, {:?}", &path, e);
-                    continue
-                },
+                    continue;
+                }
             };
 
             for row in rows {
@@ -246,7 +254,7 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>, apply_move: boo
                 }
                 let h_hash = if row.2.is_some() {
                     row.2.clone().unwrap()
-                } else  {
+                } else {
                     match get_file_sha256sum(&PathBuf::from_str(&row.0).unwrap(), PEEK_SIZE).await {
                         Ok(hash) => {
                             sqlx::query(r#"UPDATE "files" SET "hhash" = ? WHERE "path" = ?"#)
@@ -255,16 +263,16 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>, apply_move: boo
                                 .execute(&mut conn)
                                 .await?;
                             hash
-                        },
+                        }
                         Err(e) => {
                             eprintln!("[History] Got file sha256sum error: {}, {:?}", &row.0, e);
-                            continue
+                            continue;
                         }
                     }
                 };
                 dup = h_hash.eq(&p_hash);
                 if dup {
-                    break
+                    break;
                 }
             }
 
@@ -290,8 +298,8 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>, apply_move: boo
                 Ok(hash) => hash,
                 Err(e) => {
                     eprintln!("Got full file sha256sum error: {:?}, {:?}", &path, e);
-                    continue
-                },
+                    continue;
+                }
             };
 
             for row in rows {
@@ -301,7 +309,8 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>, apply_move: boo
                 let l_hash = if row.3.is_some() {
                     row.3.clone().unwrap()
                 } else {
-                    match get_file_sha256sum(&PathBuf::from_str(&row.0).unwrap(), MAX_SIZE_LIMIT).await
+                    match get_file_sha256sum(&PathBuf::from_str(&row.0).unwrap(), MAX_SIZE_LIMIT)
+                        .await
                     {
                         Ok(hash) => {
                             sqlx::query(r#"UPDATE "files" SET "hash" = ? WHERE "path" = ?"#)
@@ -310,16 +319,16 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>, apply_move: boo
                                 .execute(&mut conn)
                                 .await?;
                             hash
-                        },
+                        }
                         Err(e) => {
                             eprintln!("[History] Got file sha256sum error: {}, {:?}", &row.0, e);
-                            continue
-                        },
+                            continue;
+                        }
                     }
                 };
                 dup = l_hash.eq(&hash);
                 if dup {
-                    break
+                    break;
                 }
             }
             let file_name = file_name_str.to_string();
@@ -468,7 +477,11 @@ mod test {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    println!("Version: {}, Database version: {}", PROGRAM_VERSION, database::MAJOR_DATABASE_VERSION);
+    println!(
+        "Version: {}, Database version: {}",
+        PROGRAM_VERSION,
+        database::MAJOR_DATABASE_VERSION
+    );
     if std::env::args().into_iter().any(|x| x.eq("--revert")) {
         return revert_function();
     }
@@ -476,21 +489,25 @@ async fn main() -> Result<()> {
     if std::env::args().into_iter().any(|x| x.eq("--upgrade-v2")) {
         let conn = SqliteConnection::connect(DEFAULT_DATABASE_FILE).await?;
         database::v2::upgrade_from_v0(conn).await?;
-        return Ok(())
+        return Ok(());
     }
 
-    let apply_move = ! std::env::args().into_iter().any(|x| x.eq("--dry"));
+    let apply_move = !std::env::args().into_iter().any(|x| x.eq("--dry"));
 
     let cwd = env::current_dir().unwrap();
     create_dir(DEFAULT_FOLDER, None);
     let start_time = std::time::Instant::now();
-    iter_files(cwd, {
-        if std::env::args().into_iter().any(|x| x.eq("--memory")) {
-            None
-        } else {
-            Some(DEFAULT_DATABASE_FILE)
-        }
-    }, apply_move)
+    iter_files(
+        cwd,
+        {
+            if std::env::args().into_iter().any(|x| x.eq("--memory")) {
+                None
+            } else {
+                Some(DEFAULT_DATABASE_FILE)
+            }
+        },
+        apply_move,
+    )
     .await?;
 
     let elapsed = start_time.elapsed();
@@ -499,11 +516,7 @@ async fn main() -> Result<()> {
     } else {
         (elapsed.as_millis() as u64, "milliseconds")
     };
-    println!(
-        "Time elapsed: {} {}",
-        t,
-        suffix
-    );
+    println!("Time elapsed: {} {}", t, suffix);
     pause();
     Ok(())
 }
