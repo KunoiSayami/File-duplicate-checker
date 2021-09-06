@@ -108,7 +108,7 @@ fn iter_directory(dir: &Path) -> Result<(Vec<PathBuf>, u32)> {
     Ok((dirs, files))
 }
 
-async fn iter_files(current_dir: PathBuf, path_db: Option<&str>, apply_move: bool) -> Result<u64> {
+async fn iter_files(current_dir: PathBuf, path_db: Option<&str>, apply_move: bool, should_delete: bool) -> Result<u64> {
     if !apply_move {
         eprintln!("WARNING: dry run is specified")
     }
@@ -333,25 +333,33 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>, apply_move: boo
             }
             let file_name = file_name_str.to_string();
 
-            if dup && apply_move {
-                let target = path
-                    .clone()
-                    .to_str()
-                    .unwrap()
-                    .to_string()
-                    .split_at(current_dir_len + 1)
-                    .1
-                    .replace(if cfg!(windows) { '\\' } else { '/' }, "[0x44]");
-                let prefix = PathBuf::from(DEFAULT_FOLDER);
-                let rename_target = prefix.join(hash.clone()).join(target.clone());
-                println!(
-                    "\rFind duplicate file: {}, move to: {:?}",
-                    file_name,
-                    rename_target.clone()
-                );
-                create_dir(hash.clone().as_str(), Option::from(DEFAULT_FOLDER));
-                fs::rename(path, rename_target).unwrap();
-                num += 1;
+            if dup {
+                if should_delete {
+                    println!(
+                        "\rFind duplicate file: {}, deleted",
+                        path.clone().to_str().unwrap()
+                    );
+                    fs::remove_file(path.clone()).unwrap();
+                } else if apply_move {
+                    let target = path
+                        .clone()
+                        .to_str()
+                        .unwrap()
+                        .to_string()
+                        .split_at(current_dir_len + 1)
+                        .1
+                        .replace(if cfg!(windows) { '\\' } else { '/' }, "[0x44]");
+                    let prefix = PathBuf::from(DEFAULT_FOLDER);
+                    let rename_target = prefix.join(hash.clone()).join(target.clone());
+                    println!(
+                        "\rFind duplicate file: {}, move to: {:?}",
+                        file_name,
+                        rename_target.clone()
+                    );
+                    create_dir(hash.clone().as_str(), Option::from(DEFAULT_FOLDER));
+                    fs::rename(path, rename_target).unwrap();
+                    num += 1;
+                } 
             } else {
                 sqlx::query(r#"INSERT INTO "files" VALUES (?, ?, ?, ?)"#)
                     .bind(path.to_str().unwrap().to_string())
@@ -441,7 +449,7 @@ mod test {
         let r = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?
-            .block_on(iter_files(current_env, Some(DEFAULT_DATABASE_FILE), true))?;
+            .block_on(iter_files(current_env, Some(DEFAULT_DATABASE_FILE), true, false))?;
         Ok(r)
     }
 
@@ -460,6 +468,7 @@ mod test {
                 env::current_dir().unwrap(),
                 Some(DEFAULT_DATABASE_FILE),
                 true,
+                false,
             ))
             .unwrap();
         assert_eq!(r, 0);
@@ -492,6 +501,7 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    let should_delete = std::env::args().into_iter().any(|x| x.eq("--delete"));
     let apply_move = !std::env::args().into_iter().any(|x| x.eq("--dry"));
 
     let cwd = env::current_dir().unwrap();
@@ -507,6 +517,7 @@ async fn main() -> Result<()> {
             }
         },
         apply_move,
+        should_delete,
     )
     .await?;
 
