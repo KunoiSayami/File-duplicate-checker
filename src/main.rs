@@ -335,11 +335,17 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>, apply_move: boo
 
             if dup {
                 if should_delete {
-                    println!(
-                        "\rFind duplicate file: {}, deleted",
-                        path.clone().to_str().unwrap()
-                    );
-                    fs::remove_file(path.clone()).unwrap();
+                    match fs::remove_file(path.clone()) {
+                        Ok(_) => println!(
+                            "\rFind duplicate file: {}, deleted",
+                            path.clone().to_str().unwrap()
+                        ),
+                        Err(e) => eprintln!(
+                            "\rDelete file {} got error: {:?}",
+                            path.clone().to_str().unwrap(),
+                            &e
+                        ),
+                    }
                 } else if apply_move {
                     let target = path
                         .clone()
