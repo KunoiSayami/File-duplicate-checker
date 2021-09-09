@@ -26,6 +26,7 @@ use sqlx::{Connection, SqliteConnection};
 use std::io::{stdin, stdout, ErrorKind, Write};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+// TODO: use tokio::fs instead of std::fs
 use std::{env, fs};
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, BufReader};
@@ -69,8 +70,8 @@ async fn get_file_sha256sum(path: &Path, read_size: usize) -> Result<String> {
     Ok(format!("{:x}", result))
 }
 
-fn iter_directory(dir: &Path) -> Result<(Vec<PathBuf>, u32)> {
-    let mut files = 0u32;
+fn iter_directory(dir: &Path) -> Result<(Vec<PathBuf>, i64)> {
+    let mut files = 0;
     let mut dirs = vec![dir.to_path_buf()];
     let current_dir = dir;
     let mut skipped: Vec<String> = Default::default();
@@ -136,7 +137,7 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>, apply_move: boo
             .await?
             .is_empty()
         {
-            sqlx::query(database::v2::CREATE_TABLE)
+            sqlx::query(database::current::CREATE_TABLE)
                 .execute(&mut conn)
                 .await?;
             conn
@@ -154,8 +155,54 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>, apply_move: boo
     println!("Current path: {}", current_dir.to_str().unwrap());
     let current_dir_len = current_dir.to_str().unwrap().len();
 
-    let (directories, approximately_file_num) = iter_directory(&current_dir)?;
-    let mut current_progress = 0u32;
+
+    let working_directory = sqlx::query_as::<_, (String, )>(r#"SELECT "value" FROM "fdc_meta" WHERE "key" = ?"#)
+        .fetch_optional(&mut conn)
+        .await?;
+    let match_current_directory = if let Some(directory) = working_directory {
+        directory.0.eq(current_dir.to_str().unwrap())
+    } else {
+        false
+    };
+
+
+    let (directories, approximately_file_num) =
+    if ! match_current_directory {
+        let (directories, file_num) = iter_directory(&current_dir)?;
+        sqlx::query(r#"DROP TABLE "directory""#)
+            .execute(&mut conn)
+            .await?;
+        sqlx::query(r#"DELETE FROM "fdc_meta" WHERE "key" = 'total_num' "#)
+            .execute(&mut conn)
+            .await?;
+        sqlx::query(database::current::CREATE_DIRECTORY_TABLE)
+            .execute(&mut conn)
+            .await?;
+        let directories = directories.into_iter().map(|x| x.to_str().unwrap().to_string()).collect::<Vec<String>>();
+        for directory in &directories {
+            sqlx::query(r#"INSERT INTO "directory" VALUES (?)"#)
+                .bind(directory)
+                .execute(&mut conn)
+                .await?;
+        }
+        sqlx::query(r#"INSERT INTO "fdc_meta" VALUES (?, ?)"#)
+            .bind("total_num")
+            .bind(file_num)
+            .execute(&mut conn)
+            .await?;
+        (directories, file_num)
+    }
+    else {
+        let directories = sqlx::query_as::<_, (String,)>(r#"SELECT * FROM "directory""#)
+            .fetch_all(&mut conn)
+            .await?;
+        let num = sqlx::query_as::<_, (i64,)>(r#"SELECT "value" FROM "fdc_meta" WHERE "key" = 'total_num'"#)
+            .fetch_optional(&mut conn)
+            .await?;
+        (directories.iter().map(|x| x.0.clone()).collect(), num.unwrap_or((0,)).0)
+    };
+
+    let mut current_progress = 0i64;
     let mut last_filename_length = 0;
     println!();
     for dir in directories {
@@ -356,16 +403,31 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>, apply_move: boo
                         .1
                         .replace(if cfg!(windows) { '\\' } else { '/' }, "[0x44]");
                     let prefix = PathBuf::from(DEFAULT_FOLDER);
-                    let rename_target = prefix.join(hash.clone()).join(target.clone());
-                    println!(
-                        "\rFind duplicate file: {}, move to: {:?}",
-                        file_name,
-                        rename_target.clone()
-                    );
+                    let target_sha = database::get_string_sha256(&target).await?;
+                    sqlx::query(r#"INSERT INTO "file_mapping" VALUES (?, ?)"#)
+                        .bind(&target_sha)
+                        .bind(target)
+                        .execute(&mut conn)
+                        .await?;
+                    let rename_target = prefix.join(hash.clone()).join(target_sha);
                     create_dir(hash.clone().as_str(), Option::from(DEFAULT_FOLDER));
-                    fs::rename(path, rename_target).unwrap();
+                    match fs::rename(path, &rename_target) {
+                        Ok(_) =>
+                            println!(
+                                "\rFind duplicate file: {}, move to: {:?}",
+                                file_name,
+                                rename_target
+                            ),
+                        Err(e) => {
+                            eprintln!(
+                                "\rGot Error while moving duplicate file: {filename}, cause by {error:?}",
+                                filename = file_name,
+                                error = e,
+                            )
+                        },
+                    }
                     num += 1;
-                } 
+                }
             } else {
                 sqlx::query(r#"INSERT INTO "files" VALUES (?, ?, ?, ?)"#)
                     .bind(path.to_str().unwrap().to_string())
@@ -392,6 +454,7 @@ fn create_dir(p: &str, d: Option<&str>) {
     }
 }
 
+#[allow(dead_code)]
 fn revert_function() -> Result<()> {
     for entry in fs::read_dir(DEFAULT_FOLDER)? {
         let path = entry?.path();
@@ -497,15 +560,15 @@ async fn main() -> Result<()> {
         PROGRAM_VERSION,
         database::MAJOR_DATABASE_VERSION
     );
-    if std::env::args().into_iter().any(|x| x.eq("--revert")) {
-        return revert_function();
-    }
+    // if std::env::args().into_iter().any(|x| x.eq("--revert")) {
+    //     return revert_function();
+    // }
 
-    if std::env::args().into_iter().any(|x| x.eq("--upgrade-v2")) {
-        let conn = SqliteConnection::connect(DEFAULT_DATABASE_FILE).await?;
-        database::v2::upgrade_from_v0(conn).await?;
-        return Ok(());
-    }
+    // if std::env::args().into_iter().any(|x| x.eq("--upgrade-v2")) {
+    //     let conn = SqliteConnection::connect(DEFAULT_DATABASE_FILE).await?;
+    //     database::current::upgrade_from_v0(conn).await?;
+    //     return Ok(());
+    // }
 
     let should_delete = std::env::args().into_iter().any(|x| x.eq("--delete"));
     let apply_move = !std::env::args().into_iter().any(|x| x.eq("--dry"));

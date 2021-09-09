@@ -32,10 +32,10 @@ const SELECT_STATEMENT: &str = r#"SELECT "value" FROM "fdc_meta" WHERE "key" = '
 
 }*/
 
-pub mod v2 {
+pub mod v3 {
 
     use anyhow::Result;
-    use sqlx::{query, query_as, SqliteConnection};
+    use sqlx::{query_as, SqliteConnection};
     use std::ops::Index;
 
     pub const CREATE_TABLE: &str = r#"CREATE TABLE "files" (
@@ -51,48 +51,28 @@ pub mod v2 {
             PRIMARY KEY("key")
         );
 
-        INSERT INTO "fdc_meta" VALUES ("version", "2");
+        CREATE TABLE "file_mapping" (
+            "key"   TEXT NOT NULL,
+            "target" TEXT NOT NULL,
+            PRIMARY KEY("key")
+        );
+
+        CREATE TABLE "directory" (
+            "directory" TEXT NOT NULL
+        );
+
+        INSERT INTO "fdc_meta" VALUES ("version", "3");
         "#;
 
-    #[deprecated(since = "4.0.0", note = "CREATE_TABLE include this statement")]
-    pub const INIT_TABLE: &str = r#"INSERT INTO "fdc_meta" VALUES ("version", "2")"#;
+    pub const VERSION: &str = "3";
 
-    pub const VERSION: &str = "2";
+    pub const CREATE_DIRECTORY_TABLE: &str = r#"
 
-    pub async fn upgrade_from_v0(conn: SqliteConnection) -> Result<SqliteConnection> {
-        let (mut conn, version) = check_database_version(conn).await?;
+    CREATE TABLE "directory" (
+        "directory" TEXT NOT NULL
+    );
 
-        if version.as_str().ge(VERSION) {
-            //TODO: return Error here
-            return Ok(conn);
-        }
-
-        query(r#"ALTER TABLE "files" RENAME TO "old_files""#)
-            .execute(&mut conn)
-            .await?;
-
-        query(CREATE_TABLE).execute(&mut conn).await?;
-
-        for row in
-            query_as::<_, (String, i64, String, Option<String>)>(r#"SELECT * FROM "old_files""#)
-                .fetch_all(&mut conn)
-                .await?
-        {
-            query(r#"INSERT INTO "files" VALUES (?, ?, ?, ?)"#)
-                .bind(row.0)
-                .bind(row.1)
-                .bind(row.2)
-                .bind(row.3)
-                .execute(&mut conn)
-                .await?;
-        }
-
-        query(r#"DROP TABLE "old_files""#)
-            .execute(&mut conn)
-            .await?;
-
-        Ok(conn)
-    }
+    "#;
 
     pub async fn check_database_version(
         mut conn: SqliteConnection,
@@ -105,14 +85,23 @@ pub mod v2 {
             assert!(!v.is_empty());
             Ok((conn, v.index(0).0.clone()))
         } else {
-            Ok((conn, "1".to_string()))
+            Ok((conn, VERSION.to_string()))
         }
     }
 }
 
-pub const MAJOR_DATABASE_VERSION: &str = v2::VERSION;
+pub const MAJOR_DATABASE_VERSION: &str = v3::VERSION;
+use sha2::{Digest, Sha256, digest::DynDigest};
 use sqlx::SqliteConnection;
-pub use v2::check_database_version;
+pub use v3::check_database_version;
+pub use v3 as current;
+
+pub async fn get_string_sha256(s: &str) -> anyhow::Result<String> {
+    let mut sha256 = Sha256::new();
+    DynDigest::update(&mut sha256, s.as_bytes());
+    let result = sha256.finalize();
+    Ok(format!("{:x}", result))
+}
 
 #[derive(Debug)]
 pub enum VersionResult {
