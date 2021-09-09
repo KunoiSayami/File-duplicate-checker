@@ -157,14 +157,22 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>, apply_move: boo
 
 
     let working_directory = sqlx::query_as::<_, (String, )>(r#"SELECT "value" FROM "fdc_meta" WHERE "key" = ?"#)
+        .bind("working_directory")
         .fetch_optional(&mut conn)
         .await?;
-    let match_current_directory = if let Some(directory) = working_directory {
+
+    let match_current_directory = if let Some(ref directory) = working_directory {
         directory.0.eq(current_dir.to_str().unwrap())
     } else {
         false
     };
 
+    if ! match_current_directory {
+        sqlx::query(if working_directory.is_some() {r#"UPDATE "fdc_meta" SET "value" = ? WHERE "key" = 'working_directory'"#} else {r#"INSERT INTO "fdc_meta" VALUES ('working_directory', ?)"#})
+            .bind(current_dir.to_str().unwrap())
+            .execute(&mut conn)
+            .await?;
+    }
 
     let (directories, approximately_file_num) =
     if ! match_current_directory {
@@ -206,6 +214,7 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>, apply_move: boo
     let mut last_filename_length = 0;
     println!();
     for dir in directories {
+        let mut has_error = false;
         let read_dir = fs::read_dir(&dir);
         if read_dir.is_err() {
             let err = read_dir.unwrap_err();
@@ -265,6 +274,7 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>, apply_move: boo
             let file_size = match entry.metadata() {
                 Ok(metadata) => metadata.len(),
                 Err(e) => {
+                    has_error = true;
                     eprintln!("Error in fetch {:?} metadata ({:?})", &path, e);
                     continue;
                 }
@@ -273,9 +283,9 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>, apply_move: boo
             let rows = sqlx::query_as::<_, (String, i64, Option<String>, Option<String>)>(
                 r#"SELECT * FROM "files" WHERE "size" = ?"#,
             )
-            .bind(file_size as i64)
-            .fetch_all(&mut conn)
-            .await?;
+                .bind(file_size as i64)
+                .fetch_all(&mut conn)
+                .await?;
             if rows.is_empty() {
                 sqlx::query(r#"INSERT INTO "files" ("path", "size") VALUES (?, ?)"#)
                     .bind(path.to_str().unwrap().to_string())
@@ -290,6 +300,7 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>, apply_move: boo
             let p_hash = match get_file_sha256sum(&path, PEEK_SIZE).await {
                 Ok(s) => s,
                 Err(e) => {
+                    has_error = true;
                     eprintln!("Got file sha256sum error: {:?}, {:?}", &path, e);
                     continue;
                 }
@@ -326,10 +337,10 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>, apply_move: boo
             let rows = sqlx::query_as::<_, (String, i64, String, Option<String>)>(
                 r#"SELECT * FROM "files" WHERE "size" = ? AND "hhash" = ?"#,
             )
-            .bind(file_size as i64)
-            .bind(p_hash.clone())
-            .fetch_all(&mut conn)
-            .await?;
+                .bind(file_size as i64)
+                .bind(p_hash.clone())
+                .fetch_all(&mut conn)
+                .await?;
             if rows.is_empty() {
                 sqlx::query(r#"INSERT INTO "files" ("path", "size", "hhash") VALUES (?, ?, ?)"#)
                     .bind(path.to_str().unwrap().to_string())
@@ -344,6 +355,7 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>, apply_move: boo
             let hash = match get_file_sha256sum(&path, max_size_limit).await {
                 Ok(hash) => hash,
                 Err(e) => {
+                    has_error = true;
                     eprintln!("Got full file sha256sum error: {:?}, {:?}", &path, e);
                     continue;
                 }
@@ -368,6 +380,7 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>, apply_move: boo
                             hash
                         }
                         Err(e) => {
+                            has_error = true;
                             eprintln!("[History] Got file sha256sum error: {}, {:?}", &row.0, e);
                             continue;
                         }
@@ -387,11 +400,14 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>, apply_move: boo
                             "\rFind duplicate file: {}, deleted",
                             path.clone().to_str().unwrap()
                         ),
-                        Err(e) => eprintln!(
-                            "\rDelete file {} got error: {:?}",
-                            path.clone().to_str().unwrap(),
-                            &e
-                        ),
+                        Err(e) => {
+                            has_error = true;
+                            eprintln!(
+                                "\rDelete file {} got error: {:?}",
+                                path.clone().to_str().unwrap(),
+                                &e
+                            )
+                        },
                     }
                 } else if apply_move {
                     let target = path
@@ -419,6 +435,7 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>, apply_move: boo
                                 rename_target
                             ),
                         Err(e) => {
+                            has_error = true;
                             eprintln!(
                                 "\rGot Error while moving duplicate file: {filename}, cause by {error:?}",
                                 filename = file_name,
@@ -437,6 +454,12 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>, apply_move: boo
                     .execute(&mut conn)
                     .await?;
             }
+        }
+        if !has_error {
+            sqlx::query(r#"DELETE FROM "directory" WHERE "directory" = ? "#)
+                .bind(dir)
+                .execute(&mut conn)
+                .await?;
         }
     }
     println!("{:>80}", "");
