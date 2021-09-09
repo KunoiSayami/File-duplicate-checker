@@ -23,6 +23,17 @@ jobs:
           command: build
           args: --target aarch64-unknown-linux-musl --release
       - run: mv target/aarch64-unknown-linux-musl/release/file_duplicate_checker target/aarch64-unknown-linux-musl/release/file_duplicate_checker_linux_aarch64
+      - name: Check is pre-release
+        id: prerelasecheck
+        shell: bash
+        run: |
+          if [[ $GITHUB_REF == *"beta"* ]]; then
+            PREREPELASE=true
+          else
+            PREREPELASE=false
+          fi
+          echo "::set-output name=bin::target/release/$BIN"
+          echo "::set-output prerelease=$PREREPELASE"
       - uses: actions/upload-artifact@v2
         with:
           name: aarch64-artifact
@@ -32,5 +43,6 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         with:
           files: target/aarch64-unknown-linux-musl/release/file_duplicate_checker_linux_aarch64
+          prerelease: ${{ steps.prerelasecheck.outputs.prerelease }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

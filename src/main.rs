@@ -82,9 +82,12 @@ fn iter_directory(dir: &Path) -> Result<(Vec<PathBuf>, i64)> {
                 let path = entry.path();
                 let path_str = path.to_str().unwrap();
                 if path.is_dir() {
-                    if vec![".git", "target", DEFAULT_FOLDER]
+                    if vec!["target", DEFAULT_FOLDER]
                         .into_iter()
-                        .any(|x| path_str.ends_with(x))
+                        .any(|x| path_str.ends_with(x)) ||
+                        vec!["."]
+                        .into_iter()
+                        .any(|x| path_str.starts_with(x))
                     {
                         skipped.push(path.to_str().unwrap_or("").to_string());
                         continue;
@@ -241,7 +244,7 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>, apply_move: boo
             };*/
 
             current_progress += 1;
-            if vec![".py", ".db", ".json", ".exe", ".o", "db-wal", "db-shm"]
+            if vec![".py", ".db", ".json", ".exe", ".o", "db-wal", "db-shm", ".dll", ".ini", ".toml"]
                 .into_iter()
                 .any(|x| path_str.ends_with(x))
             {

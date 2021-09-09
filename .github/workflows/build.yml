@@ -44,7 +44,13 @@ jobs:
             BIN='file_duplicate_checker_windows_amd64.exe'
             mv target/release/file_duplicate_checker.exe target/release/$BIN
           fi
+          if [[ $GITHUB_REF == *"beta"* ]]; then
+            PREREPELASE=true
+          else
+            PREREPELASE=false
+          fi
           echo "::set-output name=bin::target/release/$BIN"
+          echo "::set-output prerelease=$PREREPELASE"
       - uses: actions/upload-artifact@v2
         with:
           name: artifact
@@ -55,5 +61,6 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         with:
           files: ${{ steps.rename.outputs.bin }}
+          prerelease: ${{ steps.rename.outputs.prerelease }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
