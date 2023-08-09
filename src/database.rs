@@ -91,10 +91,10 @@ pub mod v3 {
 }
 
 pub const MAJOR_DATABASE_VERSION: &str = v3::VERSION;
-use sha2::{Digest, Sha256, digest::DynDigest};
+use sha2::{digest::DynDigest, Digest, Sha256};
 use sqlx::SqliteConnection;
-pub use v3::check_database_version;
 pub use v3 as current;
+pub use v3::check_database_version;
 
 pub async fn get_string_sha256(s: &str) -> anyhow::Result<String> {
     let mut sha256 = Sha256::new();

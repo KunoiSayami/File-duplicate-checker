@@ -84,10 +84,8 @@ fn iter_directory(dir: &Path) -> Result<(Vec<PathBuf>, i64)> {
                 if path.is_dir() {
                     if vec!["target", DEFAULT_FOLDER]
                         .into_iter()
-                        .any(|x| path_str.ends_with(x)) ||
-                        vec!["."]
-                        .into_iter()
-                        .any(|x| path_str.starts_with(x))
+                        .any(|x| path_str.ends_with(x))
+                        || vec!["."].into_iter().any(|x| path_str.starts_with(x))
                     {
                         skipped.push(path.to_str().unwrap_or("").to_string());
                         continue;
@@ -112,7 +110,12 @@ fn iter_directory(dir: &Path) -> Result<(Vec<PathBuf>, i64)> {
     Ok((dirs, files))
 }
 
-async fn iter_files(current_dir: PathBuf, path_db: Option<&str>, apply_move: bool, should_delete: bool) -> Result<u64> {
+async fn iter_files(
+    current_dir: PathBuf,
+    path_db: Option<&str>,
+    apply_move: bool,
+    should_delete: bool,
+) -> Result<u64> {
     if !apply_move {
         eprintln!("WARNING: dry run is specified")
     }
@@ -158,11 +161,11 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>, apply_move: boo
     println!("Current path: {}", current_dir.to_str().unwrap());
     let current_dir_len = current_dir.to_str().unwrap().len();
 
-
-    let working_directory = sqlx::query_as::<_, (String, )>(r#"SELECT "value" FROM "fdc_meta" WHERE "key" = ?"#)
-        .bind("working_directory")
-        .fetch_optional(&mut conn)
-        .await?;
+    let working_directory =
+        sqlx::query_as::<_, (String,)>(r#"SELECT "value" FROM "fdc_meta" WHERE "key" = ?"#)
+            .bind("working_directory")
+            .fetch_optional(&mut conn)
+            .await?;
 
     let match_current_directory = if let Some(ref directory) = working_directory {
         directory.0.eq(current_dir.to_str().unwrap())
@@ -170,15 +173,18 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>, apply_move: boo
         false
     };
 
-    if ! match_current_directory {
-        sqlx::query(if working_directory.is_some() {r#"UPDATE "fdc_meta" SET "value" = ? WHERE "key" = 'working_directory'"#} else {r#"INSERT INTO "fdc_meta" VALUES ('working_directory', ?)"#})
-            .bind(current_dir.to_str().unwrap())
-            .execute(&mut conn)
-            .await?;
+    if !match_current_directory {
+        sqlx::query(if working_directory.is_some() {
+            r#"UPDATE "fdc_meta" SET "value" = ? WHERE "key" = 'working_directory'"#
+        } else {
+            r#"INSERT INTO "fdc_meta" VALUES ('working_directory', ?)"#
+        })
+        .bind(current_dir.to_str().unwrap())
+        .execute(&mut conn)
+        .await?;
     }
 
-    let (directories, approximately_file_num) =
-    if ! match_current_directory {
+    let (directories, approximately_file_num) = if !match_current_directory {
         let (directories, file_num) = iter_directory(&current_dir)?;
         sqlx::query(r#"DROP TABLE "directory""#)
             .execute(&mut conn)
@@ -189,7 +195,10 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>, apply_move: boo
         sqlx::query(database::current::CREATE_DIRECTORY_TABLE)
             .execute(&mut conn)
             .await?;
-        let directories = directories.into_iter().map(|x| x.to_str().unwrap().to_string()).collect::<Vec<String>>();
+        let directories = directories
+            .into_iter()
+            .map(|x| x.to_str().unwrap().to_string())
+            .collect::<Vec<String>>();
         for directory in &directories {
             sqlx::query(r#"INSERT INTO "directory" VALUES (?)"#)
                 .bind(directory)
@@ -202,15 +211,19 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>, apply_move: boo
             .execute(&mut conn)
             .await?;
         (directories, file_num)
-    }
-    else {
+    } else {
         let directories = sqlx::query_as::<_, (String,)>(r#"SELECT * FROM "directory""#)
             .fetch_all(&mut conn)
             .await?;
-        let num = sqlx::query_as::<_, (i64,)>(r#"SELECT "value" FROM "fdc_meta" WHERE "key" = 'total_num'"#)
-            .fetch_optional(&mut conn)
-            .await?;
-        (directories.iter().map(|x| x.0.clone()).collect(), num.unwrap_or((0,)).0)
+        let num = sqlx::query_as::<_, (i64,)>(
+            r#"SELECT "value" FROM "fdc_meta" WHERE "key" = 'total_num'"#,
+        )
+        .fetch_optional(&mut conn)
+        .await?;
+        (
+            directories.iter().map(|x| x.0.clone()).collect(),
+            num.unwrap_or((0,)).0,
+        )
     };
 
     let mut current_progress = 0i64;
@@ -244,9 +257,11 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>, apply_move: boo
             };*/
 
             current_progress += 1;
-            if vec![".py", ".db", ".json", ".exe", ".o", "db-wal", "db-shm", ".dll", ".ini", ".toml"]
-                .into_iter()
-                .any(|x| path_str.ends_with(x))
+            if vec![
+                ".py", ".db", ".json", ".exe", ".o", "db-wal", "db-shm", ".dll", ".ini", ".toml",
+            ]
+            .into_iter()
+            .any(|x| path_str.ends_with(x))
             {
                 continue;
             }
@@ -286,9 +301,9 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>, apply_move: boo
             let rows = sqlx::query_as::<_, (String, i64, Option<String>, Option<String>)>(
                 r#"SELECT * FROM "files" WHERE "size" = ?"#,
             )
-                .bind(file_size as i64)
-                .fetch_all(&mut conn)
-                .await?;
+            .bind(file_size as i64)
+            .fetch_all(&mut conn)
+            .await?;
             if rows.is_empty() {
                 sqlx::query(r#"INSERT INTO "files" ("path", "size") VALUES (?, ?)"#)
                     .bind(path.to_str().unwrap().to_string())
@@ -340,10 +355,10 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>, apply_move: boo
             let rows = sqlx::query_as::<_, (String, i64, String, Option<String>)>(
                 r#"SELECT * FROM "files" WHERE "size" = ? AND "hhash" = ?"#,
             )
-                .bind(file_size as i64)
-                .bind(p_hash.clone())
-                .fetch_all(&mut conn)
-                .await?;
+            .bind(file_size as i64)
+            .bind(p_hash.clone())
+            .fetch_all(&mut conn)
+            .await?;
             if rows.is_empty() {
                 sqlx::query(r#"INSERT INTO "files" ("path", "size", "hhash") VALUES (?, ?, ?)"#)
                     .bind(path.to_str().unwrap().to_string())
@@ -410,7 +425,7 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>, apply_move: boo
                                 path.clone().to_str().unwrap(),
                                 &e
                             )
-                        },
+                        }
                     }
                 } else if apply_move {
                     let target = path
@@ -431,12 +446,10 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>, apply_move: boo
                     let rename_target = prefix.join(hash.clone()).join(target_sha);
                     create_dir(hash.clone().as_str(), Option::from(DEFAULT_FOLDER));
                     match fs::rename(path, &rename_target) {
-                        Ok(_) =>
-                            println!(
-                                "\rFind duplicate file: {}, move to: {:?}",
-                                file_name,
-                                rename_target
-                            ),
+                        Ok(_) => println!(
+                            "\rFind duplicate file: {}, move to: {:?}",
+                            file_name, rename_target
+                        ),
                         Err(e) => {
                             has_error = true;
                             eprintln!(
@@ -444,7 +457,7 @@ async fn iter_files(current_dir: PathBuf, path_db: Option<&str>, apply_move: boo
                                 filename = file_name,
                                 error = e,
                             )
-                        },
+                        }
                     }
                     num += 1;
                 }
@@ -544,7 +557,12 @@ mod test {
         let r = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?
-            .block_on(iter_files(current_env, Some(DEFAULT_DATABASE_FILE), true, false))?;
+            .block_on(iter_files(
+                current_env,
+                Some(DEFAULT_DATABASE_FILE),
+                true,
+                false,
+            ))?;
         Ok(r)
     }
 
