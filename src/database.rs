@@ -32,7 +32,7 @@ const SELECT_STATEMENT: &str = r#"SELECT "value" FROM "fdc_meta" WHERE "key" = '
 
 }*/
 
-pub mod v3 {
+pub mod v4 {
 
     use anyhow::Result;
     use sqlx::{query_as, SqliteConnection};
@@ -61,10 +61,10 @@ pub mod v3 {
             "directory" TEXT NOT NULL
         );
 
-        INSERT INTO "fdc_meta" VALUES ("version", "3");
+        INSERT INTO "fdc_meta" VALUES ("version", "4");
         "#;
 
-    pub const VERSION: &str = "3";
+    pub const VERSION: &str = "4";
 
     pub const CREATE_DIRECTORY_TABLE: &str = r#"
 
@@ -90,17 +90,14 @@ pub mod v3 {
     }
 }
 
-pub const MAJOR_DATABASE_VERSION: &str = v3::VERSION;
-use sha2::{digest::DynDigest, Digest, Sha256};
+pub const MAJOR_DATABASE_VERSION: &str = v4::VERSION;
 use sqlx::SqliteConnection;
-pub use v3 as current;
-pub use v3::check_database_version;
+pub use v4 as current;
+pub use v4::check_database_version;
+use xxhash_rust::xxh3::xxh3_64;
 
-pub async fn get_string_sha256(s: &str) -> anyhow::Result<String> {
-    let mut sha256 = Sha256::new();
-    DynDigest::update(&mut sha256, s.as_bytes());
-    let result = sha256.finalize();
-    Ok(format!("{:x}", result))
+pub async fn get_string_hash(s: &str) -> String {
+    xxh3_64(s.as_bytes()).to_string()
 }
 
 #[derive(Debug)]

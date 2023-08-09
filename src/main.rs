@@ -20,16 +20,15 @@
 mod database;
 
 use anyhow::Result;
-use sha2::digest::DynDigest;
-use sha2::{Digest, Sha256};
 use sqlx::{Connection, SqliteConnection};
+use std::fmt::Debug;
 use std::io::{stdin, stdout, ErrorKind, Write};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-// TODO: use tokio::fs instead of std::fs
 use std::{env, fs};
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, BufReader};
+use xxhash_rust::xxh3::Xxh3;
 
 const BUFFER_SIZE: usize = 1024 * 16;
 const DEFAULT_MAX_SIZE_LIMIT: usize = usize::MAX;
@@ -46,7 +45,7 @@ fn pause() {
     std::io::Read::read(&mut stdin(), &mut [0]).unwrap();
 }
 
-async fn get_file_sha256sum(path: &Path, read_size: usize) -> Result<String> {
+async fn get_file_sha256sum<P: AsRef<Path> + Debug>(path: P, read_size: usize) -> Result<String> {
     let file = match File::open(&path).await {
         Ok(file) => file,
         Err(error) => {
@@ -55,19 +54,18 @@ async fn get_file_sha256sum(path: &Path, read_size: usize) -> Result<String> {
         }
     };
     let mut file = BufReader::new(file);
-    let mut sha256 = Sha256::new();
+    let mut hasher = Xxh3::new();
     let mut buffer = [0; BUFFER_SIZE];
     let mut rsize = 0usize;
     loop {
         let size = file.read(&mut buffer).await.ok().unwrap();
-        DynDigest::update(&mut sha256, &buffer[0..size]);
+        hasher.update(&buffer);
         rsize += size;
         if size < BUFFER_SIZE || rsize > read_size {
             break;
         }
     }
-    let result = sha256.finalize();
-    Ok(format!("{:x}", result))
+    Ok(hasher.digest().to_string())
 }
 
 fn iter_directory(dir: &Path) -> Result<(Vec<PathBuf>, i64)> {
@@ -131,9 +129,9 @@ async fn iter_files(
     }
     let mut num = 0u64;
     if path_db.is_some() {
-        let file = std::path::Path::new(path_db.clone().unwrap());
+        let file = Path::new(path_db.clone().unwrap());
         if !file.exists() {
-            std::fs::File::create(file)?;
+            File::create(file).await?;
         }
     }
     let mut conn = SqliteConnection::connect(path_db.unwrap_or("sqlite::memory:")).await?;
@@ -437,7 +435,7 @@ async fn iter_files(
                         .1
                         .replace(if cfg!(windows) { '\\' } else { '/' }, "[0x44]");
                     let prefix = PathBuf::from(DEFAULT_FOLDER);
-                    let target_sha = database::get_string_sha256(&target).await?;
+                    let target_sha = database::get_string_hash(&target).await;
                     sqlx::query(r#"INSERT INTO "file_mapping" VALUES (?, ?)"#)
                         .bind(&target_sha)
                         .bind(target)
@@ -517,6 +515,7 @@ fn revert_function() -> Result<()> {
 mod test {
     use super::*;
     use std::fs::OpenOptions;
+    use xxhash_rust::xxh3::xxh3_64;
 
     fn write_file(file_name: &str, bytes: usize) -> Result<()> {
         let s = std::iter::repeat("\0").take(bytes).collect::<String>();
@@ -535,7 +534,7 @@ mod test {
         }
 
         fs::create_dir(test_dir)?;
-        std::env::set_current_dir(test_dir)?;
+        env::set_current_dir(test_dir)?;
         fs::create_dir(Path::new(DEFAULT_FOLDER))?;
         write_file("1.txt", 5)?;
         write_file("2.txt", 5)?;
@@ -589,11 +588,19 @@ mod test {
 
     #[test]
     fn test_revert() {
-        let cwd = std::env::current_dir().unwrap();
+        let cwd = env::current_dir().unwrap();
         if !cwd.ends_with("test") {
             panic!("Should specify `--test-threads=1' in args")
         }
         revert_function().unwrap();
+    }
+
+    #[test]
+    fn test_xx3hash() {
+        const TEST_DATA: [u8; 9] = [0x00, 0x01, 0x02, 0x13, 0xcc, 0xab, 0x03, 0x03, 0x53];
+        let mut q = Xxh3::new();
+        q.update(&TEST_DATA);
+        assert_eq!(q.digest(), xxh3_64(&TEST_DATA));
     }
 }
 
