@@ -66,19 +66,8 @@ jobs:
       - uses: actions/checkout@v2
       - run: rustup target install aarch64-unknown-linux-musl
       - run: cargo install cross
-      - name: Build binary
+      - name: Build aarch64 binary
         run: cross build --release --target aarch64-unknown-linux-musl
-      - uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-          target: aarch64-unknown-linux-musl
-          override: true
-      - name: Build aarch 64 binary
-        uses: actions-rs/cargo@v1
-        with:
-          use-cross: true
-          command: build
-          args: --release
       - run: mv target/aarch64-unknown-linux-musl/release/file_duplicate_checker target/aarch64-unknown-linux-musl/release/file_duplicate_checker_linux_aarch64
       - name: Check is pre-release
         id: prerelasecheck
