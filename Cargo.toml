@@ -1,11 +1,18 @@
 [package]
 name = "file_duplicate_checker"
-version = "6.0.0"
+version = "7.0.0"
 authors = ["KunoiSayami <46131041+KunoiSayami@users.noreply.github.com>"]
-edition = "2018"
+edition = "2021"
 
 [dependencies]
-sqlx = { version = "0.7.1", features = ["sqlite", "runtime-tokio-rustls"] }
+sqlx = { version = "0.8.2", features = ["sqlite", "runtime-tokio"] }
 tokio = { version = "1", features = ["full"] }
 anyhow = "1"
 xxhash-rust = { version = "^0.8.6", features = ["xxh3"] }
+clap = { version = "4", features = ["cargo"] }
+log = { version = "0.4", features = [
+    "max_level_debug",
+    "release_max_level_info",
+] }
+env_logger = "0.11"
+tap = "1"
